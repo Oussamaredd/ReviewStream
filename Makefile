@@ -107,3 +107,19 @@ clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 	find . -type d -name ".pytest_cache" -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
+
+SPARK_SUBMIT := $(VENV)/bin/spark-submit
+SPARK_KAFKA_PACKAGE := org.apache.spark:spark-sql-kafka-0-10_2.13:4.0.1
+
+.PHONY: spark-stream spark-version
+
+spark-version:
+	PATH="$(PWD)/$(VENV)/bin:$$PATH" $(SPARK_SUBMIT) --version
+
+spark-stream:
+	PATH="$(PWD)/$(VENV)/bin:$$PATH" \
+	PYSPARK_PYTHON="$(PWD)/$(PY)" \
+	PYSPARK_DRIVER_PYTHON="$(PWD)/$(PY)" \
+	$(SPARK_SUBMIT) \
+		--packages $(SPARK_KAFKA_PACKAGE) \
+		spark/streaming_reviews.py
