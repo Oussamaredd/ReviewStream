@@ -81,15 +81,15 @@ smoke:
 	$(MAKE) consume
 
 format:
-	$(VENV)/bin/black backend
+	$(VENV)/bin/black backend spark
 
 lint:
-	$(VENV)/bin/ruff check backend
+	$(VENV)/bin/ruff check backend spark
 
 check:
-	$(PY) -m compileall backend
-	$(VENV)/bin/ruff check backend
-	$(VENV)/bin/black --check backend
+	$(PY) -m compileall backend spark
+	$(VENV)/bin/ruff check backend spark
+	$(VENV)/bin/black --check backend spark
 
 doctor:
 	@echo "Python:"
@@ -123,3 +123,13 @@ spark-stream:
 	$(SPARK_SUBMIT) \
 		--packages $(SPARK_KAFKA_PACKAGE) \
 		spark/streaming_reviews.py
+
+.PHONY: spark-analytics
+
+spark-analytics:
+	PATH="$(PWD)/$(VENV)/bin:$$PATH" \
+	PYSPARK_PYTHON="$(PWD)/$(PY)" \
+	PYSPARK_DRIVER_PYTHON="$(PWD)/$(PY)" \
+	$(SPARK_SUBMIT) \
+		--packages $(SPARK_KAFKA_PACKAGE) \
+		spark/streaming_analytics.py

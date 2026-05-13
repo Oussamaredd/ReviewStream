@@ -2,7 +2,7 @@ import os
 
 from dotenv import load_dotenv
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, from_json, to_timestamp
+from pyspark.sql.functions import avg, col, count, from_json, round, to_timestamp, when
 from pyspark.sql.types import IntegerType, StringType, StructField, StructType
 
 load_dotenv()
@@ -24,15 +24,7 @@ review_schema = StructType(
 )
 
 
-def main() -> None:
-    spark = (
-        SparkSession.builder.appName("ReviewStreamKafkaConsumer")
-        .config("spark.sql.shuffle.partitions", "2")
-        .getOrCreate()
-    )
-
-    spark.sparkContext.setLogLevel("WARN")
-
+def read_reviews_from_kafka(spark: SparkSession):
     raw_reviews = (
         spark.readStream.format("kafka")
         .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS)
@@ -41,7 +33,7 @@ def main() -> None:
         .load()
     )
 
-    review_events = raw_reviews.select(
+    return raw_reviews.select(
         col("key").cast("string").alias("kafka_key"),
         col("value").cast("string").alias("json_value"),
         col("topic"),
@@ -50,7 +42,9 @@ def main() -> None:
         col("timestamp").alias("kafka_timestamp"),
     )
 
-    parsed_reviews = review_events.select(
+
+def parse_reviews(review_events):
+    return review_events.select(
         "kafka_key",
         "topic",
         "partition",
@@ -72,19 +66,59 @@ def main() -> None:
         to_timestamp(col("review.created_at")).alias("created_at"),
     )
 
-    query = (
-        parsed_reviews.writeStream.queryName("live_reviews_console")
+
+def add_sentiment(reviews):
+    return reviews.withColumn(
+        "sentiment",
+        when(col("score") >= 4, "positive")
+        .when(col("score") == 3, "neutral")
+        .otherwise("negative"),
+    )
+
+
+def main() -> None:
+    spark = (
+        SparkSession.builder.appName("ReviewStreamAnalytics")
+        .config("spark.sql.shuffle.partitions", "2")
+        .getOrCreate()
+    )
+
+    spark.sparkContext.setLogLevel("WARN")
+
+    review_events = read_reviews_from_kafka(spark)
+    reviews = add_sentiment(parse_reviews(review_events))
+
+    sentiment_counts = reviews.groupBy("sentiment").agg(count("*").alias("review_count"))
+
+    product_scores = (
+        reviews.groupBy("product_id")
+        .agg(
+            count("*").alias("review_count"),
+            round(avg("score"), 2).alias("average_score"),
+        )
+        .orderBy(col("review_count").desc())
+    )
+
+    (
+        sentiment_counts.writeStream.queryName("reviews_by_sentiment")
         .format("console")
-        .outputMode("append")
+        .outputMode("complete")
         .option("truncate", "false")
-        .option("numRows", 20)
         .start()
     )
 
-    print(f"Spark is listening to Kafka topic: {KAFKA_TOPIC}")
-    print("Submit a review with: make test-review")
+    (
+        product_scores.writeStream.queryName("product_score_summary")
+        .format("console")
+        .outputMode("complete")
+        .option("truncate", "false")
+        .start()
+    )
 
-    query.awaitTermination()
+    print(f"Spark analytics is listening to Kafka topic: {KAFKA_TOPIC}")
+    print("Submit reviews with: make test-review")
+
+    spark.streams.awaitAnyTermination()
 
 
 if __name__ == "__main__":
