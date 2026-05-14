@@ -135,6 +135,10 @@ async function checkHealth() {
 }
 
 async function loadDashboard() {
+  if (isDashboardLoading.value) {
+    return;
+  }
+
   isDashboardLoading.value = true;
   dashboardError.value = "";
 
@@ -449,7 +453,7 @@ onBeforeUnmount(() => {
             <strong>{{ row.product_id }}</strong>
             <span>{{ row.source }} - {{ row.sentiment }} - score {{ row.score }}</span>
           </div>
-          <p>{{ row.text }}</p>
+          <p v-if="row.text">{{ row.text }}</p>
           <small>
             {{ formatDate(row.created_at) }} - {{ formatInteger(row.word_count) }} words
             <span v-if="row.has_positive_keywords"> - positive keyword</span>

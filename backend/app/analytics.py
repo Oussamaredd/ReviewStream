@@ -72,7 +72,7 @@ RECENT_REVIEWS_QUERY_TEMPLATE = """
         user_id,
         score,
         sentiment,
-        text,
+        CAST('' AS STRING) AS text,
         source,
         review_id,
         created_at,
@@ -81,7 +81,8 @@ RECENT_REVIEWS_QUERY_TEMPLATE = """
         has_negative_keywords,
         has_positive_keywords
     FROM reviews_enriched
-    WHERE created_at IS NOT NULL
+    WHERE source = 'web'
+        AND created_at IS NOT NULL
     ORDER BY created_at DESC
     LIMIT {limit}
     """

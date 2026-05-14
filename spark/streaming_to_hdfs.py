@@ -43,6 +43,7 @@ def main() -> None:
         .outputMode("append")
         .option("path", bronze_reviews_raw_path())
         .option("checkpointLocation", checkpoint_path("bronze_reviews_raw"))
+        .trigger(processingTime="10 seconds")
         .start()
     )
 
@@ -52,6 +53,7 @@ def main() -> None:
         .outputMode("append")
         .option("path", silver_reviews_enriched_path())
         .option("checkpointLocation", checkpoint_path("silver_reviews_enriched"))
+        .trigger(processingTime="10 seconds")
         .start()
     )
 
