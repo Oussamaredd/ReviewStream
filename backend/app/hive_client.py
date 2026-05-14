@@ -1,3 +1,4 @@
+import logging
 import os
 from contextlib import closing
 from datetime import date, datetime
@@ -15,6 +16,12 @@ HIVE_DATABASE = os.getenv("HIVE_DATABASE", "reviewstream")
 HIVE_USERNAME = os.getenv("HIVE_USERNAME", "root")
 HIVE_AUTH = os.getenv("HIVE_AUTH", "NOSASL")
 
+logger = logging.getLogger(__name__)
+
+
+class HiveQueryError(RuntimeError):
+    """Raised when a Hive query cannot be completed."""
+
 
 def normalize_value(value: Any) -> Any:
     if isinstance(value, Decimal):
@@ -25,19 +32,23 @@ def normalize_value(value: Any) -> Any:
 
 
 def fetch_all(query: str) -> list[dict[str, Any]]:
-    with closing(
-        hive.Connection(
-            host=HIVE_HOST,
-            port=HIVE_PORT,
-            username=HIVE_USERNAME,
-            database=HIVE_DATABASE,
-            auth=HIVE_AUTH,
-        )
-    ) as connection:
-        with closing(connection.cursor()) as cursor:
-            cursor.execute(query)
-            columns = [column[0].split(".")[-1] for column in cursor.description or []]
-            rows = cursor.fetchall()
+    try:
+        with closing(
+            hive.Connection(
+                host=HIVE_HOST,
+                port=HIVE_PORT,
+                username=HIVE_USERNAME,
+                database=HIVE_DATABASE,
+                auth=HIVE_AUTH,
+            )
+        ) as connection:
+            with closing(connection.cursor()) as cursor:
+                cursor.execute(query)
+                columns = [column[0].split(".")[-1] for column in cursor.description or []]
+                rows = cursor.fetchall()
+    except Exception as error:
+        logger.exception("Hive query failed")
+        raise HiveQueryError("Hive query failed") from error
 
     return [{column: normalize_value(value) for column, value in zip(columns, row)} for row in rows]
 

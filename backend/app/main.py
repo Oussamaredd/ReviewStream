@@ -1,16 +1,17 @@
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from .analytics import router as analytics_router
 from .config import settings
 from .models import ReviewEvent, ReviewIn
 from .producer import close_producer, send_review
-from backend.app.analytics import router as analytics_router
 
 
 @asynccontextmanager
-async def lifespan(app: FastAPI):
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     yield
     close_producer()
 
@@ -31,7 +32,7 @@ app.add_middleware(
 
 
 @app.get("/")
-def root():
+def root() -> dict[str, str]:
     return {
         "app": "ReviewStream API",
         "status": "running",
@@ -39,7 +40,7 @@ def root():
 
 
 @app.get("/health")
-def health():
+def health() -> dict[str, str]:
     return {
         "status": "ok",
         "kafka_topic": settings.kafka_topic,
@@ -47,7 +48,7 @@ def health():
 
 
 @app.post("/reviews", status_code=201)
-def create_review(review: ReviewIn):
+def create_review(review: ReviewIn) -> dict[str, object]:
     event = ReviewEvent.from_review(review).model_dump()
 
     try:
@@ -60,10 +61,10 @@ def create_review(review: ReviewIn):
         }
 
     except RuntimeError as error:
-        raise HTTPException(status_code=503, detail=str(error))
+        raise HTTPException(status_code=503, detail=str(error)) from error
 
     except Exception as error:
-        raise HTTPException(status_code=500, detail=f"Unexpected error: {error}")
+        raise HTTPException(status_code=500, detail=f"Unexpected error: {error}") from error
 
 
 app.include_router(analytics_router)
