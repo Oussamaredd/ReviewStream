@@ -8,7 +8,7 @@ UVICORN := $(VENV)/bin/uvicorn
 
 AMAZON_REVIEWS_CSV ?= data/Reviews.csv
 
-.PHONY: help setup install dev-install docker-up docker-down docker-logs kafka-topic api health test-review consume smoke format lint check doctor clean
+.PHONY: help setup install dev-install docker-up docker-down docker-logs kafka-topic api api-reload health test-review consume smoke format lint check doctor clean
 
 help:
 	@echo "ReviewStream commands:"
@@ -20,6 +20,7 @@ help:
 	@echo "  make docker-logs   Show Docker logs"
 	@echo "  make kafka-topic   Create Kafka topic: reviews"
 	@echo "  make api           Run FastAPI backend"
+	@echo "  make api-reload    Run FastAPI backend with autoreload"
 	@echo "  make health        Test API health endpoint"
 	@echo "  make test-review   Send a sample review to the API"
 	@echo "  make consume       Read messages from Kafka"
@@ -63,7 +64,10 @@ kafka-topic:
 		--replication-factor 1
 
 api:
-	$(UVICORN) backend.app.main:app --reload --port 8000
+	$(UVICORN) backend.app.main:app --port 8000
+
+api-reload:
+	$(UVICORN) backend.app.main:app --reload --reload-dir backend --port 8000
 
 health:
 	curl http://localhost:8000/health
@@ -216,7 +220,7 @@ hive-query:
 
 hive-metastore-init:
 	docker compose stop hive-server hive-metastore || true
-	docker compose run --rm hive-metastore bash -lc '/opt/hive/bin/schematool -dbType postgres -info || /opt/hive/bin/schematool -dbType postgres -initSchema --verbose'
+	docker compose run --rm hive-metastore /opt/hive/bin/schematool -dbType postgres -info || docker compose run --rm hive-metastore /opt/hive/bin/schematool -dbType postgres -initSchema --verbose
 	docker compose up -d hive-metastore hive-server
 	$(MAKE) hive-wait
 
