@@ -9,7 +9,7 @@ load_dotenv()
 
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "reviews")
-HDFS_BASE_PATH = os.getenv("HDFS_BASE_PATH", "hdfs://localhost:9000/reviewstream")
+HDFS_BASE_PATH = os.getenv("HDFS_BASE_PATH", "hdfs://namenode:9000/reviewstream")
 
 
 review_schema = StructType(
@@ -29,7 +29,7 @@ def main() -> None:
     spark = (
         SparkSession.builder.appName("ReviewStreamHDFSWriter")
         .config("spark.sql.shuffle.partitions", "2")
-        .config("spark.hadoop.fs.defaultFS", "hdfs://localhost:9000")
+        .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:9000")
         .config("spark.hadoop.dfs.replication", "1")
         .config("spark.hadoop.dfs.client.use.datanode.hostname", "true")
         .getOrCreate()
