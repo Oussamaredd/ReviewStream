@@ -6,6 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from .config import settings
 from .models import ReviewEvent, ReviewIn
 from .producer import close_producer, send_review
+from backend.app.analytics import router as analytics_router
 
 
 @asynccontextmanager
@@ -63,3 +64,6 @@ def create_review(review: ReviewIn):
 
     except Exception as error:
         raise HTTPException(status_code=500, detail=f"Unexpected error: {error}")
+
+
+app.include_router(analytics_router)
