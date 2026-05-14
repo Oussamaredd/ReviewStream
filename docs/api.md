@@ -1,40 +1,24 @@
 # API
 
-The ReviewStream API is a local/demo FastAPI service. It is unauthenticated and not intended for
-public internet exposure.
-
 Default base URL:
 
 ```text
 http://localhost:8000
 ```
 
-## GET /
+The API is unauthenticated and intended for local development only.
 
-Returns basic API status.
+## Health
 
-```bash
-curl http://localhost:8000/
-```
+### GET /
 
-Example response:
+Returns API status.
 
-```json
-{
-  "app": "ReviewStream API",
-  "status": "running"
-}
-```
-
-## GET /health
+### GET /health
 
 Returns health status and the configured Kafka topic.
 
-```bash
-curl http://localhost:8000/health
-```
-
-Example response:
+Example:
 
 ```json
 {
@@ -43,152 +27,129 @@ Example response:
 }
 ```
 
-## POST /reviews
+## Reviews
 
-Accepts a product review and publishes a review event to Kafka topic `reviews`.
+### POST /reviews
 
-```bash
-curl -X POST http://localhost:8000/reviews \
-  -H "Content-Type: application/json" \
-  -d '{
-    "product_id": "P001",
-    "user_id": "client1",
-    "score": 5,
-    "text": "Great product",
-    "source": "web"
-  }'
+Publishes a review event to Kafka.
+
+Request:
+
+```json
+{
+  "product_id": "P001",
+  "user_id": "client1",
+  "score": 5,
+  "text": "Great product",
+  "source": "web"
+}
 ```
 
-Request fields:
+Rules:
 
-| Field | Type | Rules |
+| Field | Rules |
+| --- | --- |
+| `product_id` | required, 1-100 characters |
+| `user_id` | required, 1-100 characters |
+| `score` | required integer, 1-5 |
+| `text` | required, 1-2000 characters |
+| `source` | optional, defaults to `web`, max 50 characters |
+
+Response status: `201 Created`.
+
+## Analytics
+
+All analytics endpoints query Hive table `reviewstream.reviews_enriched`. If Hive is unavailable,
+they return status `503`:
+
+```json
+{"detail": "Analytics service is unavailable"}
+```
+
+### GET /analytics
+
+Compatibility aggregate containing:
+
+- `summary`
+- `sentiment`
+- `products`
+
+### GET /analytics/summary
+
+Returns total reviews, average score, first review timestamp, and latest review timestamp.
+
+### GET /analytics/sentiment
+
+Returns counts grouped by score-based sentiment.
+
+### GET /analytics/products?limit=10
+
+Returns product aggregates ordered by review count and average score.
+
+Parameters:
+
+| Name | Default | Rules |
 | --- | --- | --- |
-| `product_id` | string | required, 1-100 chars |
-| `user_id` | string | required, 1-100 chars |
-| `score` | integer | required, 1-5 |
-| `text` | string | required, 1-2000 chars |
-| `source` | string | optional, defaults to `web`, max 50 chars |
+| `limit` | `10` | integer, 1-100 |
 
-Successful response status: `201 Created`.
+### GET /analytics/score-distribution
 
-The response includes Kafka metadata and the emitted review event, including generated
-`review_id` and `created_at` fields.
+Returns review counts grouped by numeric score.
 
-## GET /analytics/summary
+### GET /analytics/top-products?limit=10&min_reviews=5
 
-Queries Hive and returns review totals.
+Returns products with the highest average score, filtered by minimum review count.
 
-```bash
-curl http://localhost:8000/analytics/summary
-```
+Parameters:
 
-Example response:
+| Name | Default | Rules |
+| --- | --- | --- |
+| `limit` | `10` | integer, 1-100 |
+| `min_reviews` | `5` | integer, 1-1,000,000 |
 
-```json
-{
-  "total_reviews": 12,
-  "average_score": 4.25,
-  "first_review_at": "2026-05-14T10:00:00",
-  "last_review_at": "2026-05-14T10:30:00"
-}
-```
+### GET /analytics/worst-products?limit=10&min_reviews=5
 
-## GET /analytics/sentiment
+Returns products with the lowest average score, filtered by minimum review count.
 
-Queries Hive and returns review counts by sentiment.
+### GET /analytics/recent?limit=20
 
-```bash
-curl http://localhost:8000/analytics/sentiment
-```
+Returns newest reviews ordered by `created_at DESC`.
 
-Example response:
+Parameters:
 
-```json
-[
-  {
-    "sentiment": "positive",
-    "review_count": 8
-  },
-  {
-    "sentiment": "neutral",
-    "review_count": 3
-  },
-  {
-    "sentiment": "negative",
-    "review_count": 1
-  }
-]
-```
+| Name | Default | Rules |
+| --- | --- | --- |
+| `limit` | `20` | integer, 1-100 |
 
-## GET /analytics/products
+### GET /analytics/negative-products?limit=10&min_reviews=3
 
-Queries Hive and returns product review aggregates ordered by review count and average score.
+Returns products with the most negative reviews.
 
-Optional query parameter:
+### GET /analytics/sources
 
-| Name | Type | Rules | Default |
-| --- | --- | --- | --- |
-| `limit` | integer | `1 <= limit <= 100` | `10` |
+Returns review counts grouped by source, such as `amazon_csv` and `web`.
 
-```bash
-curl http://localhost:8000/analytics/products
-curl http://localhost:8000/analytics/products?limit=5
-```
+### GET /analytics/keywords/negative
 
-Example response:
+Returns the count of reviews containing one or more negative keywords.
 
-```json
-[
-  {
-    "product_id": "P001",
-    "review_count": 7,
-    "average_score": 4.71
-  }
-]
-```
+### GET /analytics/keywords/positive
 
-## GET /analytics
+Returns the count of reviews containing one or more positive keywords.
 
-Queries Hive and returns summary, sentiment, and top product analytics in one payload.
+### GET /analytics/dashboard
 
-```bash
-curl http://localhost:8000/analytics
-```
-
-Example response:
+Returns the dashboard payload:
 
 ```json
 {
-  "summary": {
-    "total_reviews": 12,
-    "average_score": 4.25,
-    "first_review_at": "2026-05-14T10:00:00",
-    "last_review_at": "2026-05-14T10:30:00"
-  },
-  "sentiment": [
-    {
-      "sentiment": "positive",
-      "review_count": 8
-    }
-  ],
-  "products": [
-    {
-      "product_id": "P001",
-      "review_count": 7,
-      "average_score": 4.71
-    }
-  ]
+  "summary": {},
+  "sentiment": [],
+  "score_distribution": [],
+  "top_products": [],
+  "worst_products": [],
+  "negative_products": [],
+  "recent_reviews": [],
+  "sources": []
 }
 ```
-
-## Analytics Error Response
-
-If Hive is unavailable or a Hive query fails, analytics endpoints return:
-
-```json
-{
-  "detail": "Analytics service is unavailable"
-}
-```
-
-Status code: `503 Service Unavailable`.

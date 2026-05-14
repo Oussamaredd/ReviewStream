@@ -1,12 +1,10 @@
-import os
-
 from dotenv import load_dotenv
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col
 
-load_dotenv()
+from spark.paths import silver_reviews_enriched_path
 
-HDFS_BASE_PATH = os.getenv("HDFS_BASE_PATH", "hdfs://namenode:9000/reviewstream")
+load_dotenv()
 
 
 def main() -> None:
@@ -19,7 +17,7 @@ def main() -> None:
 
     spark.sparkContext.setLogLevel("WARN")
 
-    silver_path = f"{HDFS_BASE_PATH}/silver/reviews_enriched"
+    silver_path = silver_reviews_enriched_path()
 
     reviews = spark.read.parquet(silver_path)
 
@@ -31,6 +29,11 @@ def main() -> None:
         "user_id",
         "score",
         "sentiment",
+        "source",
+        "text_length",
+        "word_count",
+        "has_negative_keywords",
+        "has_positive_keywords",
         "text",
         "review_id",
         "created_at",

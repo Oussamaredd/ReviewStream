@@ -12,20 +12,66 @@ from backend.app.main import app
 client = TestClient(app)
 
 SUMMARY_RESPONSE = {
-    "total_reviews": 4,
-    "average_score": 4.25,
+    "total_reviews": 6,
+    "average_score": 4.0,
     "first_review_at": "2026-01-01T00:00:00",
     "last_review_at": "2026-01-02T00:00:00",
 }
 
 SENTIMENT_RESPONSE = [
-    {"sentiment": "positive", "review_count": 3},
+    {"sentiment": "negative", "review_count": 1},
     {"sentiment": "neutral", "review_count": 1},
+    {"sentiment": "positive", "review_count": 4},
 ]
 
 PRODUCT_RESPONSE = [
     {"product_id": "P001", "review_count": 3, "average_score": 4.67},
     {"product_id": "P002", "review_count": 1, "average_score": 3.0},
+]
+
+SCORE_DISTRIBUTION_RESPONSE = [
+    {"score": 1, "review_count": 1},
+    {"score": 3, "review_count": 1},
+    {"score": 5, "review_count": 4},
+]
+
+TOP_PRODUCTS_RESPONSE = [
+    {"product_id": "P001", "review_count": 12, "average_score": 4.9},
+]
+
+WORST_PRODUCTS_RESPONSE = [
+    {"product_id": "P009", "review_count": 7, "average_score": 1.7},
+]
+
+NEGATIVE_PRODUCTS_RESPONSE = [
+    {
+        "product_id": "P009",
+        "negative_review_count": 5,
+        "review_count": 7,
+        "average_score": 1.7,
+    },
+]
+
+RECENT_RESPONSE = [
+    {
+        "product_id": "P001",
+        "user_id": "client1",
+        "score": 5,
+        "sentiment": "positive",
+        "text": "Great and fresh",
+        "source": "web",
+        "review_id": "review-1",
+        "created_at": "2026-01-02T00:00:00",
+        "text_length": 15,
+        "word_count": 3,
+        "has_negative_keywords": False,
+        "has_positive_keywords": True,
+    },
+]
+
+SOURCES_RESPONSE = [
+    {"source": "amazon_csv", "review_count": 5},
+    {"source": "web", "review_count": 1},
 ]
 
 
@@ -35,6 +81,13 @@ def mock_hive_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     def fake_fetch_one(query: str) -> dict[str, Any]:
         queries.append(query)
         assert "FROM reviews_enriched" in query
+
+        if "has_negative_keywords = true" in query:
+            return {"matching_reviews": 2}
+
+        if "has_positive_keywords = true" in query:
+            return {"matching_reviews": 4}
+
         assert "COUNT(*) AS total_reviews" in query
         return SUMMARY_RESPONSE
 
@@ -44,6 +97,24 @@ def mock_hive_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
         if "GROUP BY sentiment" in query:
             return SENTIMENT_RESPONSE
+
+        if "GROUP BY score" in query:
+            return SCORE_DISTRIBUTION_RESPONSE
+
+        if "negative_review_count" in query:
+            return NEGATIVE_PRODUCTS_RESPONSE
+
+        if "ORDER BY created_at DESC" in query:
+            return RECENT_RESPONSE
+
+        if "GROUP BY COALESCE(source, 'unknown')" in query:
+            return SOURCES_RESPONSE
+
+        if "GROUP BY product_id" in query and "HAVING COUNT(*) >=" in query:
+            if "ORDER BY average_score DESC" in query:
+                return TOP_PRODUCTS_RESPONSE
+            if "ORDER BY average_score ASC" in query:
+                return WORST_PRODUCTS_RESPONSE
 
         if "GROUP BY product_id" in query:
             return PRODUCT_RESPONSE
@@ -62,63 +133,99 @@ def test_health_returns_status_and_topic() -> None:
     assert response.json() == {"status": "ok", "kafka_topic": settings.kafka_topic}
 
 
-def test_summary_returns_hive_summary(monkeypatch: pytest.MonkeyPatch) -> None:
-    mock_hive_calls(monkeypatch)
-
-    response = client.get("/analytics/summary")
-
-    assert response.status_code == 200
-    assert response.json() == SUMMARY_RESPONSE
-
-
-def test_sentiment_returns_hive_counts(monkeypatch: pytest.MonkeyPatch) -> None:
-    mock_hive_calls(monkeypatch)
-
-    response = client.get("/analytics/sentiment")
-
-    assert response.status_code == 200
-    assert response.json() == SENTIMENT_RESPONSE
-
-
-def test_products_returns_hive_scores_with_constrained_limit(
+def test_existing_analytics_endpoints_return_hive_payloads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     queries = mock_hive_calls(monkeypatch)
 
-    response = client.get("/analytics/products?limit=3")
-
-    assert response.status_code == 200
-    assert response.json() == PRODUCT_RESPONSE
-    assert "LIMIT 3" in queries[-1]
-
-
-def test_products_rejects_limits_outside_allowed_range(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    def fail_if_hive_is_called(query: str) -> list[dict[str, Any]]:
-        raise AssertionError(f"Hive should not be called for invalid limit: {query}")
-
-    monkeypatch.setattr(analytics, "fetch_all", fail_if_hive_is_called)
-
-    low_response = client.get("/analytics/products?limit=0")
-    high_response = client.get("/analytics/products?limit=101")
-
-    assert low_response.status_code == 422
-    assert high_response.status_code == 422
+    assert client.get("/analytics/summary").json() == SUMMARY_RESPONSE
+    assert client.get("/analytics/sentiment").json() == SENTIMENT_RESPONSE
+    assert client.get("/analytics/products?limit=3").json() == PRODUCT_RESPONSE
+    assert client.get("/analytics").json() == {
+        "summary": SUMMARY_RESPONSE,
+        "sentiment": SENTIMENT_RESPONSE,
+        "products": PRODUCT_RESPONSE,
+    }
+    assert "LIMIT 3" in "\n".join(queries)
+    assert "LIMIT 10" in queries[-1]
 
 
-def test_aggregate_returns_combined_hive_analytics(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_new_analytics_endpoints_return_hive_payloads(monkeypatch: pytest.MonkeyPatch) -> None:
     queries = mock_hive_calls(monkeypatch)
 
-    response = client.get("/analytics")
+    assert client.get("/analytics/score-distribution").json() == SCORE_DISTRIBUTION_RESPONSE
+    assert client.get("/analytics/top-products?limit=4&min_reviews=2").json() == TOP_PRODUCTS_RESPONSE
+    assert (
+        client.get("/analytics/worst-products?limit=4&min_reviews=2").json()
+        == WORST_PRODUCTS_RESPONSE
+    )
+    assert client.get("/analytics/recent?limit=5").json() == RECENT_RESPONSE
+    assert (
+        client.get("/analytics/negative-products?limit=6&min_reviews=3").json()
+        == NEGATIVE_PRODUCTS_RESPONSE
+    )
+    assert client.get("/analytics/sources").json() == SOURCES_RESPONSE
+    assert client.get("/analytics/keywords/negative").json() == {
+        "keyword_type": "negative",
+        "matching_reviews": 2,
+    }
+    assert client.get("/analytics/keywords/positive").json() == {
+        "keyword_type": "positive",
+        "matching_reviews": 4,
+    }
+
+    joined_queries = "\n".join(queries)
+    assert "LIMIT 4" in joined_queries
+    assert "HAVING COUNT(*) >= 2" in joined_queries
+    assert "LIMIT 5" in joined_queries
+    assert "LIMIT 6" in joined_queries
+
+
+def test_dashboard_endpoint_payload_shape(monkeypatch: pytest.MonkeyPatch) -> None:
+    mock_hive_calls(monkeypatch)
+
+    response = client.get("/analytics/dashboard")
 
     assert response.status_code == 200
     assert response.json() == {
         "summary": SUMMARY_RESPONSE,
         "sentiment": SENTIMENT_RESPONSE,
-        "products": PRODUCT_RESPONSE,
+        "score_distribution": SCORE_DISTRIBUTION_RESPONSE,
+        "top_products": TOP_PRODUCTS_RESPONSE,
+        "worst_products": WORST_PRODUCTS_RESPONSE,
+        "negative_products": NEGATIVE_PRODUCTS_RESPONSE,
+        "recent_reviews": RECENT_RESPONSE,
+        "sources": SOURCES_RESPONSE,
     }
-    assert "LIMIT 10" in queries[-1]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/analytics/products?limit=0",
+        "/analytics/products?limit=101",
+        "/analytics/top-products?limit=0",
+        "/analytics/top-products?min_reviews=0",
+        "/analytics/worst-products?limit=101",
+        "/analytics/worst-products?min_reviews=0",
+        "/analytics/recent?limit=0",
+        "/analytics/recent?limit=101",
+        "/analytics/negative-products?limit=0",
+        "/analytics/negative-products?min_reviews=0",
+    ],
+)
+def test_analytics_rejects_invalid_query_params(
+    monkeypatch: pytest.MonkeyPatch,
+    path: str,
+) -> None:
+    def fail_if_hive_is_called(query: str) -> list[dict[str, Any]]:
+        raise AssertionError(f"Hive should not be called for invalid params: {query}")
+
+    monkeypatch.setattr(analytics, "fetch_all", fail_if_hive_is_called)
+
+    response = client.get(path)
+
+    assert response.status_code == 422
 
 
 @pytest.mark.parametrize(
@@ -127,6 +234,15 @@ def test_aggregate_returns_combined_hive_analytics(monkeypatch: pytest.MonkeyPat
         ("/analytics/summary", "fetch_one"),
         ("/analytics/sentiment", "fetch_all"),
         ("/analytics/products", "fetch_all"),
+        ("/analytics/score-distribution", "fetch_all"),
+        ("/analytics/top-products", "fetch_all"),
+        ("/analytics/worst-products", "fetch_all"),
+        ("/analytics/recent", "fetch_all"),
+        ("/analytics/negative-products", "fetch_all"),
+        ("/analytics/sources", "fetch_all"),
+        ("/analytics/keywords/negative", "fetch_one"),
+        ("/analytics/keywords/positive", "fetch_one"),
+        ("/analytics/dashboard", "fetch_one"),
         ("/analytics", "fetch_one"),
     ],
 )

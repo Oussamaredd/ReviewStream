@@ -1,9 +1,7 @@
 # Local Development
 
-These commands assume Python 3.12, Docker, and Docker Compose are available.
-
-ReviewStream is a local/demo project. The API and services are unauthenticated and should not be
-published to the public internet.
+Use this page for command-level local setup. For the evaluator flow, see
+[demo.md](demo.md).
 
 ## Setup
 
@@ -11,9 +9,10 @@ published to the public internet.
 make setup
 make dev-install
 cp .env.example .env
+cd frontend && npm install && cd ..
 ```
 
-## Start Infrastructure
+## Infrastructure
 
 ```bash
 make docker-up
@@ -25,78 +24,59 @@ make hive-wait
 make hive-init
 ```
 
-Use these commands to inspect the stack:
+## Historical Data
 
-```bash
-make docker-logs
-make hdfs-ls
-make hive-tables
-make hive-query
+Put Amazon Fine Food Reviews at:
+
+```text
+data/Reviews.csv
 ```
 
-## Run The API
+Download it from:
 
-Open a separate terminal:
-
-```bash
-make api
+```text
+https://www.kaggle.com/datasets/snap/amazon-fine-food-reviews
 ```
 
-Check health:
+Extract `Reviews.csv` from the archive. Keep it local only; git ignores `data/Reviews.csv`.
+
+Run:
 
 ```bash
-curl http://localhost:8000/health
-```
-
-## Run The Storage Stream
-
-Open a separate terminal:
-
-```bash
-make spark-storage
-```
-
-The Spark job should keep running while you submit reviews. It writes bronze JSON and silver
-Parquet data to HDFS.
-
-## Submit Data
-
-```bash
-make test-review
+make batch-amazon
 ```
 
 Or:
 
 ```bash
-curl -X POST http://localhost:8000/reviews \
-  -H "Content-Type: application/json" \
-  -d '{"product_id":"P001","user_id":"client1","score":5,"text":"Great product","source":"web"}'
+make batch-amazon AMAZON_REVIEWS_CSV=/path/to/Reviews.csv
 ```
 
-## Query Hive And Analytics
+## Live Data
+
+Start long-running processes in separate terminals:
 
 ```bash
+make api
+make spark-storage
+cd frontend && npm run dev
+```
+
+Submit a sample review:
+
+```bash
+make test-review
+```
+
+## Checks
+
+```bash
+make dashboard-ready-check
 make hive-tables
-make hive-query
-curl http://localhost:8000/analytics/summary
-curl http://localhost:8000/analytics/sentiment
-curl http://localhost:8000/analytics/products
-curl http://localhost:8000/analytics
+curl http://localhost:8000/analytics/dashboard
 ```
 
-## Run Checks
-
-```bash
-make format
-make check
-pytest
-mypy backend spark
-docker compose config
-```
-
-The pytest suite mocks Hive access, so it does not need Docker services to be running.
-
-## Stop Services
+## Stop
 
 ```bash
 make docker-down

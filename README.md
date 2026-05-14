@@ -1,183 +1,232 @@
 # ReviewStream
 
-ReviewStream is a local development and demo data pipeline for product reviews. A FastAPI
-backend receives review events, publishes them to Kafka, Spark Structured Streaming stores
-bronze and silver datasets in HDFS, Hive exposes the silver Parquet data, and the API serves
-Hive-backed analytics endpoints.
+ReviewStream is a local Big Data ecommerce review analytics project. It demonstrates two data
+paths that land in the same Hive-backed analytics table:
 
-This project is intentionally unauthenticated and intended for local development only. Do not
-expose these services or API endpoints directly to the public internet.
+- Historical batch ingestion from Amazon Fine Food Reviews `Reviews.csv`.
+- Live review streaming from the dashboard/API through Kafka and Spark.
+
+The project is for local development and demos. The API, dashboard, and Docker services are
+unauthenticated and must not be exposed directly to the public internet.
 
 ## Architecture
 
 ```text
-curl/client
-  -> FastAPI POST /reviews
-  -> Kafka topic reviews
-  -> Spark Structured Streaming
-  -> HDFS bronze JSON: /reviewstream/bronze/reviews_raw
-  -> HDFS silver Parquet: /reviewstream/silver/reviews_enriched
-  -> Hive external table: reviewstream.reviews_enriched
-  -> FastAPI analytics endpoints
-  -> future dashboard
+Historical path:
+  data/Reviews.csv
+    -> Spark batch job
+    -> HDFS bronze amazon_reviews_raw
+    -> HDFS silver reviews_enriched
+    -> Hive reviewstream.reviews_enriched
+    -> FastAPI analytics
+    -> Vue dashboard
+
+Live path:
+  Vue dashboard
+    -> FastAPI POST /reviews
+    -> Kafka topic reviews
+    -> Spark Structured Streaming
+    -> HDFS bronze reviews_raw
+    -> HDFS silver reviews_enriched
+    -> Hive reviewstream.reviews_enriched
+    -> FastAPI analytics
+    -> Vue dashboard
 ```
 
-More detail is available in [docs/architecture.md](docs/architecture.md).
+Silver rows include normalized review fields, score-based sentiment, and lightweight text
+analytics:
 
-## Services And Ports
+- `text_length`
+- `word_count`
+- `has_negative_keywords`
+- `has_positive_keywords`
 
-| Service | Container | Port |
-| --- | --- | --- |
-| FastAPI backend | local process | `8000` |
-| Kafka | `reviewstream-kafka` | `9092` |
-| Kafka UI | `reviewstream-kafka-ui` | `8080` |
-| HDFS NameNode web UI | `reviewstream-namenode` | `9870` |
-| HDFS NameNode RPC | `reviewstream-namenode` | `9000` |
-| HDFS DataNode UI/data | `reviewstream-datanode` | `9864`, `9866` |
-| Hive Metastore | `reviewstream-hive-metastore` | `9083` |
-| HiveServer2 | `reviewstream-hive-server` | `10000`, `10002` |
-| PostgreSQL metastore DB | `reviewstream-hive-metastore-postgresql` | internal `5432` |
-| Zookeeper | `reviewstream-zookeeper` | internal `2181` |
+## Requirements
 
-## Local Setup
+- Python 3.12
+- Docker and Docker Compose
+- Node.js 20+ for the dashboard
+- Amazon Fine Food Reviews CSV when running historical ingestion
 
-Use Python 3.12 for local development and CI parity.
+Do not commit `data/Reviews.csv`; `data/` is ignored except for `data/.gitkeep`.
+
+## Setup
 
 ```bash
 make setup
 make dev-install
 cp .env.example .env
+cd frontend && npm install && cd ..
 ```
 
-The default `.env.example` values are local Docker defaults and should work for the standard
-Compose stack.
+Default local paths:
 
-## Run Docker Services
+```text
+AMAZON_REVIEWS_CSV=data/Reviews.csv
+HDFS_BASE_PATH=hdfs://namenode:9000/reviewstream
+```
+
+## Full Local Demo
+
+Place `Reviews.csv` at `data/Reviews.csv`, then run the finite setup:
 
 ```bash
-make docker-up
-make kafka-topic
-make hdfs-wait
-make hdfs-init
-make hive-metastore-init
-make hive-wait
-make hive-init
+make demo-full
 ```
 
-Useful inspection commands:
+`demo-full` starts infrastructure, initializes HDFS/Hive, runs historical batch ingestion when the
+CSV exists, and then prints the long-running commands to start separately.
+
+Start these in separate terminals:
 
 ```bash
-make docker-logs
-make hdfs-ls
-make hive-tables
-make hive-query
+make api
+make spark-storage
+cd frontend && npm run dev
 ```
 
-Stop the stack with:
+Open the dashboard at the Vite URL, usually:
+
+```text
+http://localhost:5173
+```
+
+Check readiness:
 
 ```bash
-make docker-down
+make dashboard-ready-check
 ```
 
-## Start The API
+## Historical Batch Ingestion
 
-Run the API in a separate terminal:
+Download the Amazon Fine Food Reviews dataset from Kaggle:
+
+```text
+https://www.kaggle.com/datasets/snap/amazon-fine-food-reviews
+```
+
+Extract `Reviews.csv` and place it at:
+
+```text
+data/Reviews.csv
+```
+
+The CSV is intentionally ignored by git. Commit only `data/.gitkeep` so the expected local
+directory exists for new clones.
+
+Default:
+
+```bash
+make batch-amazon
+```
+
+Custom local path:
+
+```bash
+make batch-amazon AMAZON_REVIEWS_CSV=/path/to/Reviews.csv
+```
+
+HDFS path:
+
+```bash
+make batch-amazon AMAZON_REVIEWS_CSV=hdfs://namenode:9000/data/Reviews.csv
+```
+
+The batch job reads CSV with headers, inferred schema, multiline support, and quote escaping. It
+requires `Id`, `ProductId`, `UserId`, `Score`, `Text`, and `Time`, writes cleaned raw rows to
+`/reviewstream/bronze/amazon_reviews_raw`, and appends normalized Parquet rows to
+`/reviewstream/silver/reviews_enriched`.
+
+## Live Streaming
+
+Start the API:
 
 ```bash
 make api
 ```
 
-Health check:
-
-```bash
-curl http://localhost:8000/health
-```
-
-## Submit Reviews
-
-Use the Makefile sample:
-
-```bash
-make test-review
-```
-
-Or submit JSON directly:
-
-```bash
-curl -X POST http://localhost:8000/reviews \
-  -H "Content-Type: application/json" \
-  -d '{
-    "product_id": "P001",
-    "user_id": "client1",
-    "score": 5,
-    "text": "Great product",
-    "source": "web"
-  }'
-```
-
-## Run Spark Storage Job
-
-Run the storage stream in a separate terminal while Kafka, HDFS, and Hive services are up:
+Start the Spark storage stream:
 
 ```bash
 make spark-storage
 ```
 
-This job reads Kafka topic `reviews`, writes raw Kafka records as bronze JSON, enriches reviews
-with sentiment, and writes silver Parquet records for Hive.
-
-You can also run the console-only Spark examples:
+Submit a review from the dashboard or with:
 
 ```bash
-make spark-stream
-make spark-analytics
-make spark-read-silver
+make test-review
 ```
 
-## Initialize And Query Hive
+Analytics are eventually consistent: a successful API response means the review is queued in
+Kafka; Spark and Hive-backed analytics update after the stream writes silver data.
 
-Initialize the metastore schema and create the external table:
+## Hive
+
+Initialize and query Hive:
 
 ```bash
 make hive-metastore-init
 make hive-wait
 make hive-init
-```
-
-Inspect the external table:
-
-```bash
 make hive-tables
 make hive-query
-make hive-shell
 ```
 
-Hive exposes:
+Hive table:
 
 ```text
 database: reviewstream
 table: reviews_enriched
-path: /reviewstream/silver/reviews_enriched
+location: /reviewstream/silver/reviews_enriched
 ```
 
-## Analytics API
+## API Endpoints
 
-Analytics endpoints query Hive through the backend. If Hive is unavailable, the API returns a
-safe `503` response with `{"detail": "Analytics service is unavailable"}`.
+Core:
 
-```bash
-curl http://localhost:8000/analytics/summary
-curl http://localhost:8000/analytics/sentiment
-curl http://localhost:8000/analytics/products
-curl http://localhost:8000/analytics/products?limit=5
-curl http://localhost:8000/analytics
+- `GET /`
+- `GET /health`
+- `POST /reviews`
+
+Analytics:
+
+- `GET /analytics`
+- `GET /analytics/summary`
+- `GET /analytics/sentiment`
+- `GET /analytics/products?limit=10`
+- `GET /analytics/score-distribution`
+- `GET /analytics/top-products?limit=10&min_reviews=5`
+- `GET /analytics/worst-products?limit=10&min_reviews=5`
+- `GET /analytics/recent?limit=20`
+- `GET /analytics/negative-products?limit=10&min_reviews=3`
+- `GET /analytics/sources`
+- `GET /analytics/keywords/negative`
+- `GET /analytics/keywords/positive`
+- `GET /analytics/dashboard`
+
+If Hive is unavailable, analytics endpoints return:
+
+```json
+{"detail": "Analytics service is unavailable"}
 ```
 
-Current endpoints are documented in [docs/api.md](docs/api.md).
+## Services And Ports
 
-## Tests And Checks
+| Service | Port |
+| --- | --- |
+| FastAPI | `8000` |
+| Vite dashboard | `5173` |
+| Kafka | `9092` |
+| Kafka UI | `8080` |
+| HDFS NameNode UI | `9870` |
+| HDFS NameNode RPC | `9000` |
+| HDFS DataNode | `9864`, `9866` |
+| Hive Metastore | `9083` |
+| HiveServer2 | `10000`, `10002` |
 
-Tests mock Hive access, so Docker, Kafka, HDFS, Spark, and Hive do not need to be running.
+## Tests And CI
+
+Local checks:
 
 ```bash
 make format
@@ -185,7 +234,25 @@ make check
 pytest
 mypy backend spark
 docker compose config
+cd frontend && npm run build
 ```
 
-CI runs compile, Ruff, Black check, mypy, pytest, and Docker Compose config validation on push
-and pull request.
+CI stays lightweight and does not start Kafka, HDFS, Spark, or Hive. It installs dependencies,
+compiles Python, runs Ruff, Black check, mypy, pytest, and `docker compose config`.
+
+## Troubleshooting
+
+- API unreachable: run `make api`.
+- Dashboard cannot reach API: use `cd frontend && npm run dev`; Vite proxies `/api` to
+  `http://127.0.0.1:8000`.
+- Hive unavailable: run `make hive-wait` and `make hive-init`.
+- Empty dashboard: run `make batch-amazon` for historical data or start `make spark-storage` and
+  submit live reviews.
+- Missing CSV: put Amazon `Reviews.csv` at `data/Reviews.csv` or pass `AMAZON_REVIEWS_CSV=...`.
+
+More detail:
+
+- [Architecture](docs/architecture.md)
+- [API](docs/api.md)
+- [Demo guide](docs/demo.md)
+- [Troubleshooting](docs/troubleshooting.md)

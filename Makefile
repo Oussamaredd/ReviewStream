@@ -6,6 +6,8 @@ PIP := $(VENV)/bin/pip
 PY := $(VENV)/bin/python
 UVICORN := $(VENV)/bin/uvicorn
 
+AMAZON_REVIEWS_CSV ?= data/Reviews.csv
+
 .PHONY: help setup install dev-install docker-up docker-down docker-logs kafka-topic api health test-review consume smoke format lint check doctor clean
 
 help:
@@ -22,6 +24,9 @@ help:
 	@echo "  make test-review   Send a sample review to the API"
 	@echo "  make consume       Read messages from Kafka"
 	@echo "  make smoke         Run health + review send + Kafka consume"
+	@echo "  make batch-amazon  Ingest historical Amazon Reviews.csv into HDFS silver"
+	@echo "  make demo-full     Run finite setup steps and print long-running demo commands"
+	@echo "  make dashboard-ready-check  Check HDFS, Hive, and API dashboard readiness"
 	@echo "  make format        Format backend code"
 	@echo "  make lint          Lint backend code"
 	@echo "  make check         Compile + lint + formatting check"
@@ -118,6 +123,7 @@ spark-version:
 
 spark-stream:
 	PATH="$(PWD)/$(VENV)/bin:$$PATH" \
+	PYTHONPATH="$(PWD)" \
 	PYSPARK_PYTHON="$(PWD)/$(PY)" \
 	PYSPARK_DRIVER_PYTHON="$(PWD)/$(PY)" \
 	$(SPARK_SUBMIT) \
@@ -128,16 +134,18 @@ spark-stream:
 
 spark-analytics:
 	PATH="$(PWD)/$(VENV)/bin:$$PATH" \
+	PYTHONPATH="$(PWD)" \
 	PYSPARK_PYTHON="$(PWD)/$(PY)" \
 	PYSPARK_DRIVER_PYTHON="$(PWD)/$(PY)" \
 	$(SPARK_SUBMIT) \
 		--packages $(SPARK_KAFKA_PACKAGE) \
 		spark/streaming_analytics.py
 
-.PHONY: hdfs-init hdfs-ls hdfs-cat-bronze spark-storage
+.PHONY: hdfs-init hdfs-ls hdfs-cat-bronze spark-storage batch-amazon
 
 hdfs-init:
 	docker exec reviewstream-namenode hdfs dfs -mkdir -p /reviewstream/bronze/reviews_raw
+	docker exec reviewstream-namenode hdfs dfs -mkdir -p /reviewstream/bronze/amazon_reviews_raw
 	docker exec reviewstream-namenode hdfs dfs -mkdir -p /reviewstream/silver/reviews_enriched
 	docker exec reviewstream-namenode hdfs dfs -mkdir -p /reviewstream/checkpoints
 	docker exec reviewstream-namenode hdfs dfs -chmod -R 777 /reviewstream
@@ -150,11 +158,20 @@ hdfs-cat-bronze:
 
 spark-storage:
 	PATH="$(PWD)/$(VENV)/bin:$$PATH" \
+	PYTHONPATH="$(PWD)" \
 	PYSPARK_PYTHON="$(PWD)/$(PY)" \
 	PYSPARK_DRIVER_PYTHON="$(PWD)/$(PY)" \
 	$(SPARK_SUBMIT) \
 		--packages $(SPARK_KAFKA_PACKAGE) \
 		spark/streaming_to_hdfs.py
+
+batch-amazon:
+	PATH="$(PWD)/$(VENV)/bin:$$PATH" \
+	PYTHONPATH="$(PWD)" \
+	PYSPARK_PYTHON="$(PWD)/$(PY)" \
+	PYSPARK_DRIVER_PYTHON="$(PWD)/$(PY)" \
+	AMAZON_REVIEWS_CSV="$(AMAZON_REVIEWS_CSV)" \
+	$(SPARK_SUBMIT) spark/batch_ingest_amazon_reviews.py
 
 .PHONY: hdfs-wait
 
@@ -170,6 +187,7 @@ hdfs-wait:
 
 spark-read-silver:
 	PATH="$(PWD)/$(VENV)/bin:$$PATH" \
+	PYTHONPATH="$(PWD)" \
 	PYSPARK_PYTHON="$(PWD)/$(PY)" \
 	PYSPARK_DRIVER_PYTHON="$(PWD)/$(PY)" \
 	$(SPARK_SUBMIT) spark/read_silver_reviews.py
@@ -204,3 +222,58 @@ hive-metastore-init:
 
 hive-tables:
 	docker exec reviewstream-hive-server beeline -u 'jdbc:hive2://localhost:10000/reviewstream;auth=noSasl' -n root -e "SHOW TABLES; DESCRIBE reviews_enriched; SELECT COUNT(*) AS total_reviews FROM reviews_enriched; SELECT * FROM reviews_enriched LIMIT 10;"
+
+.PHONY: demo-full dashboard-ready-check
+
+demo-full:
+	@echo "Starting finite ReviewStream demo setup steps..."
+	$(MAKE) docker-up
+	$(MAKE) kafka-topic
+	$(MAKE) hdfs-wait
+	$(MAKE) hdfs-init
+	$(MAKE) hive-metastore-init
+	$(MAKE) hive-wait
+	$(MAKE) hive-init
+	@if [[ -f "$(AMAZON_REVIEWS_CSV)" || "$(AMAZON_REVIEWS_CSV)" == hdfs://* ]]; then \
+		$(MAKE) batch-amazon AMAZON_REVIEWS_CSV="$(AMAZON_REVIEWS_CSV)"; \
+	else \
+		echo "Skipping batch-amazon: $(AMAZON_REVIEWS_CSV) was not found."; \
+		echo "Place Amazon Reviews.csv at data/Reviews.csv or run: make batch-amazon AMAZON_REVIEWS_CSV=/path/to/Reviews.csv"; \
+	fi
+	@echo ""
+	@echo "Long-running commands to start in separate terminals:"
+	@echo "  make api"
+	@echo "  make spark-storage"
+	@echo "  cd frontend && npm install && npm run dev"
+	@echo ""
+	@echo "Then open the dashboard at the Vite URL, usually http://localhost:5173."
+
+dashboard-ready-check:
+	@echo "Checking HDFS paths..."
+	@if docker exec reviewstream-namenode hdfs dfs -test -d /reviewstream/bronze/reviews_raw >/dev/null 2>&1; then \
+		echo "OK: /reviewstream/bronze/reviews_raw exists"; \
+	else \
+		echo "MISSING: /reviewstream/bronze/reviews_raw"; \
+	fi
+	@if docker exec reviewstream-namenode hdfs dfs -test -d /reviewstream/bronze/amazon_reviews_raw >/dev/null 2>&1; then \
+		echo "OK: /reviewstream/bronze/amazon_reviews_raw exists"; \
+	else \
+		echo "MISSING: /reviewstream/bronze/amazon_reviews_raw"; \
+	fi
+	@if docker exec reviewstream-namenode hdfs dfs -test -d /reviewstream/silver/reviews_enriched >/dev/null 2>&1; then \
+		echo "OK: /reviewstream/silver/reviews_enriched exists"; \
+	else \
+		echo "MISSING: /reviewstream/silver/reviews_enriched"; \
+	fi
+	@echo "Checking Hive table..."
+	@if docker exec reviewstream-hive-server beeline -u 'jdbc:hive2://localhost:10000/reviewstream;auth=noSasl' -n root -e "USE reviewstream; DESCRIBE reviews_enriched;" >/dev/null 2>&1; then \
+		echo "OK: Hive table reviewstream.reviews_enriched is available"; \
+	else \
+		echo "MISSING: Hive table reviewstream.reviews_enriched is not reachable"; \
+	fi
+	@echo "Checking analytics API..."
+	@if curl --fail --silent --max-time 3 http://localhost:8000/analytics/dashboard >/dev/null 2>&1; then \
+		echo "OK: http://localhost:8000/analytics/dashboard is reachable"; \
+	else \
+		echo "SKIP: API not reachable; start it with make api"; \
+	fi
