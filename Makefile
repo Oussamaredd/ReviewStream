@@ -133,3 +133,43 @@ spark-analytics:
 	$(SPARK_SUBMIT) \
 		--packages $(SPARK_KAFKA_PACKAGE) \
 		spark/streaming_analytics.py
+
+.PHONY: hdfs-init hdfs-ls hdfs-cat-bronze spark-storage
+
+hdfs-init:
+	docker exec reviewstream-namenode hdfs dfs -mkdir -p /reviewstream/bronze/reviews_raw
+	docker exec reviewstream-namenode hdfs dfs -mkdir -p /reviewstream/silver/reviews_enriched
+	docker exec reviewstream-namenode hdfs dfs -mkdir -p /reviewstream/checkpoints
+	docker exec reviewstream-namenode hdfs dfs -chmod -R 777 /reviewstream
+
+hdfs-ls:
+	docker exec reviewstream-namenode hdfs dfs -ls -R /reviewstream
+
+hdfs-cat-bronze:
+	docker exec reviewstream-datanode hdfs dfs -cat "/reviewstream/bronze/reviews_raw/*.json" | head -n 10
+
+spark-storage:
+	PATH="$(PWD)/$(VENV)/bin:$$PATH" \
+	PYSPARK_PYTHON="$(PWD)/$(PY)" \
+	PYSPARK_DRIVER_PYTHON="$(PWD)/$(PY)" \
+	$(SPARK_SUBMIT) \
+		--packages $(SPARK_KAFKA_PACKAGE) \
+		spark/streaming_to_hdfs.py
+
+.PHONY: hdfs-wait
+
+hdfs-wait:
+	@echo "Waiting for HDFS NameNode..."
+	@until docker exec reviewstream-namenode hdfs dfsadmin -report >/dev/null 2>&1; do \
+		echo "HDFS not ready yet..."; \
+		sleep 5; \
+	done
+	@echo "HDFS is ready."
+
+.PHONY: spark-read-silver
+
+spark-read-silver:
+	PATH="$(PWD)/$(VENV)/bin:$$PATH" \
+	PYSPARK_PYTHON="$(PWD)/$(PY)" \
+	PYSPARK_DRIVER_PYTHON="$(PWD)/$(PY)" \
+	$(SPARK_SUBMIT) spark/read_silver_reviews.py
