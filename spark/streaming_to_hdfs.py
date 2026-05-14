@@ -2,13 +2,14 @@ import os
 
 from dotenv import load_dotenv
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import col, from_json, to_timestamp
+from pyspark.sql.functions import col, from_json, to_timestamp, when
 from pyspark.sql.types import IntegerType, StringType, StructField, StructType
 
 load_dotenv()
 
 KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
 KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "reviews")
+HDFS_BASE_PATH = os.getenv("HDFS_BASE_PATH", "hdfs://namenode:9000/reviewstream")
 
 
 review_schema = StructType(
@@ -26,8 +27,11 @@ review_schema = StructType(
 
 def main() -> None:
     spark = (
-        SparkSession.builder.appName("ReviewStreamKafkaConsumer")
+        SparkSession.builder.appName("ReviewStreamHDFSWriter")
         .config("spark.sql.shuffle.partitions", "2")
+        .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:9000")
+        .config("spark.hadoop.dfs.replication", "1")
+        .config("spark.hadoop.dfs.client.use.datanode.hostname", "true")
         .getOrCreate()
     )
 
@@ -41,7 +45,7 @@ def main() -> None:
         .load()
     )
 
-    review_events = raw_reviews.select(
+    bronze_reviews = raw_reviews.select(
         col("key").cast("string").alias("kafka_key"),
         col("value").cast("string").alias("json_value"),
         col("topic"),
@@ -50,7 +54,7 @@ def main() -> None:
         col("timestamp").alias("kafka_timestamp"),
     )
 
-    parsed_reviews = review_events.select(
+    parsed_reviews = bronze_reviews.select(
         "kafka_key",
         "topic",
         "partition",
@@ -72,19 +76,40 @@ def main() -> None:
         to_timestamp(col("review.created_at")).alias("created_at"),
     )
 
-    query = (
-        parsed_reviews.writeStream.queryName("live_reviews_console")
-        .format("console")
+    silver_reviews = parsed_reviews.withColumn(
+        "sentiment",
+        when(col("score") >= 4, "positive")
+        .when(col("score") == 3, "neutral")
+        .otherwise("negative"),
+    )
+
+    bronze_query = (
+        bronze_reviews.writeStream.queryName("bronze_reviews_raw_to_hdfs")
+        .format("json")
         .outputMode("append")
-        .option("truncate", "false")
-        .option("numRows", 20)
+        .option("path", f"{HDFS_BASE_PATH}/bronze/reviews_raw")
+        .option("checkpointLocation", f"{HDFS_BASE_PATH}/checkpoints/bronze_reviews_raw")
         .start()
     )
 
-    print(f"Spark is listening to Kafka topic: {KAFKA_TOPIC}")
-    print("Submit a review with: make test-review")
+    silver_query = (
+        silver_reviews.writeStream.queryName("silver_reviews_enriched_to_hdfs")
+        .format("parquet")
+        .outputMode("append")
+        .option("path", f"{HDFS_BASE_PATH}/silver/reviews_enriched")
+        .option("checkpointLocation", f"{HDFS_BASE_PATH}/checkpoints/silver_reviews_enriched")
+        .start()
+    )
 
-    query.awaitTermination()
+    print("Spark is writing review streams to HDFS")
+    print(f"Bronze path: {HDFS_BASE_PATH}/bronze/reviews_raw")
+    print(f"Silver path: {HDFS_BASE_PATH}/silver/reviews_enriched")
+    print("Submit reviews with: make test-review")
+
+    spark.streams.awaitAnyTermination()
+
+    bronze_query.stop()
+    silver_query.stop()
 
 
 if __name__ == "__main__":

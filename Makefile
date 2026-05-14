@@ -81,15 +81,15 @@ smoke:
 	$(MAKE) consume
 
 format:
-	$(VENV)/bin/black backend
+	$(VENV)/bin/black backend spark
 
 lint:
-	$(VENV)/bin/ruff check backend
+	$(VENV)/bin/ruff check backend spark
 
 check:
-	$(PY) -m compileall backend
-	$(VENV)/bin/ruff check backend
-	$(VENV)/bin/black --check backend
+	$(PY) -m compileall backend spark
+	$(VENV)/bin/ruff check backend spark
+	$(VENV)/bin/black --check backend spark
 
 doctor:
 	@echo "Python:"
@@ -107,3 +107,100 @@ clean:
 	find . -type d -name "__pycache__" -exec rm -rf {} +
 	find . -type d -name ".pytest_cache" -exec rm -rf {} +
 	find . -type f -name "*.pyc" -delete
+
+SPARK_SUBMIT := $(VENV)/bin/spark-submit
+SPARK_KAFKA_PACKAGE := org.apache.spark:spark-sql-kafka-0-10_2.13:4.0.1
+
+.PHONY: spark-stream spark-version
+
+spark-version:
+	PATH="$(PWD)/$(VENV)/bin:$$PATH" $(SPARK_SUBMIT) --version
+
+spark-stream:
+	PATH="$(PWD)/$(VENV)/bin:$$PATH" \
+	PYSPARK_PYTHON="$(PWD)/$(PY)" \
+	PYSPARK_DRIVER_PYTHON="$(PWD)/$(PY)" \
+	$(SPARK_SUBMIT) \
+		--packages $(SPARK_KAFKA_PACKAGE) \
+		spark/streaming_reviews.py
+
+.PHONY: spark-analytics
+
+spark-analytics:
+	PATH="$(PWD)/$(VENV)/bin:$$PATH" \
+	PYSPARK_PYTHON="$(PWD)/$(PY)" \
+	PYSPARK_DRIVER_PYTHON="$(PWD)/$(PY)" \
+	$(SPARK_SUBMIT) \
+		--packages $(SPARK_KAFKA_PACKAGE) \
+		spark/streaming_analytics.py
+
+.PHONY: hdfs-init hdfs-ls hdfs-cat-bronze spark-storage
+
+hdfs-init:
+	docker exec reviewstream-namenode hdfs dfs -mkdir -p /reviewstream/bronze/reviews_raw
+	docker exec reviewstream-namenode hdfs dfs -mkdir -p /reviewstream/silver/reviews_enriched
+	docker exec reviewstream-namenode hdfs dfs -mkdir -p /reviewstream/checkpoints
+	docker exec reviewstream-namenode hdfs dfs -chmod -R 777 /reviewstream
+
+hdfs-ls:
+	docker exec reviewstream-namenode hdfs dfs -ls -R /reviewstream
+
+hdfs-cat-bronze:
+	docker exec reviewstream-datanode hdfs dfs -cat "/reviewstream/bronze/reviews_raw/*.json" | head -n 10
+
+spark-storage:
+	PATH="$(PWD)/$(VENV)/bin:$$PATH" \
+	PYSPARK_PYTHON="$(PWD)/$(PY)" \
+	PYSPARK_DRIVER_PYTHON="$(PWD)/$(PY)" \
+	$(SPARK_SUBMIT) \
+		--packages $(SPARK_KAFKA_PACKAGE) \
+		spark/streaming_to_hdfs.py
+
+.PHONY: hdfs-wait
+
+hdfs-wait:
+	@echo "Waiting for HDFS NameNode..."
+	@until docker exec reviewstream-namenode hdfs dfsadmin -report >/dev/null 2>&1; do \
+		echo "HDFS not ready yet..."; \
+		sleep 5; \
+	done
+	@echo "HDFS is ready."
+
+.PHONY: spark-read-silver
+
+spark-read-silver:
+	PATH="$(PWD)/$(VENV)/bin:$$PATH" \
+	PYSPARK_PYTHON="$(PWD)/$(PY)" \
+	PYSPARK_DRIVER_PYTHON="$(PWD)/$(PY)" \
+	$(SPARK_SUBMIT) spark/read_silver_reviews.py
+
+.PHONY: hive-wait hive-init hive-shell hive-query
+
+hive-wait:
+	@echo "Waiting for HiveServer2..."
+	@until docker exec reviewstream-hive-server beeline -u 'jdbc:hive2://localhost:10000/reviewstream;auth=noSasl' -n root -e "SELECT 1;" >/dev/null 2>&1; do \
+		echo "Hive not ready yet..."; \
+		sleep 5; \
+	done
+	@echo "Hive is ready."
+
+hive-init:
+	docker cp hive/init.sql reviewstream-hive-server:/tmp/reviewstream_hive_init.sql
+	docker exec reviewstream-hive-server beeline -u 'jdbc:hive2://localhost:10000/reviewstream;auth=noSasl' -n root -f /tmp/reviewstream_hive_init.sql
+
+hive-shell:
+	docker exec -it reviewstream-hive-server beeline -u 'jdbc:hive2://localhost:10000/reviewstream;auth=noSasl' -n root
+
+hive-query:
+	docker exec reviewstream-hive-server beeline -u 'jdbc:hive2://localhost:10000/reviewstream;auth=noSasl' -n root -e "USE reviewstream; SELECT sentiment, COUNT(*) AS review_count FROM reviews_enriched GROUP BY sentiment; SELECT product_id, COUNT(*) AS review_count, AVG(score) AS average_score FROM reviews_enriched GROUP BY product_id;"
+
+.PHONY: hive-metastore-init hive-tables
+
+hive-metastore-init:
+	docker compose stop hive-server hive-metastore || true
+	docker compose run --rm hive-metastore bash -lc '/opt/hive/bin/schematool -dbType postgres -info || /opt/hive/bin/schematool -dbType postgres -initSchema --verbose'
+	docker compose up -d hive-metastore hive-server
+	$(MAKE) hive-wait
+
+hive-tables:
+	docker exec reviewstream-hive-server beeline -u 'jdbc:hive2://localhost:10000/reviewstream;auth=noSasl' -n root -e "SHOW TABLES; DESCRIBE reviews_enriched; SELECT COUNT(*) AS total_reviews FROM reviews_enriched; SELECT * FROM reviews_enriched LIMIT 10;"

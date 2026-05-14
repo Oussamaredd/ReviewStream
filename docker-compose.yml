@@ -35,3 +35,88 @@ services:
     environment:
       KAFKA_CLUSTERS_0_NAME: reviewstream-local
       KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+
+  namenode:
+    image: bde2020/hadoop-namenode:2.0.0-hadoop3.2.1-java8
+    container_name: reviewstream-namenode
+    restart: unless-stopped
+    ports:
+      - "9870:9870"
+      - "9000:9000"
+    environment:
+      CLUSTER_NAME: reviewstream
+      CORE_CONF_fs_defaultFS: hdfs://namenode:9000
+      HDFS_CONF_dfs_replication: 1
+      HDFS_CONF_dfs_client_use_datanode_hostname: "true"
+    volumes:
+      - hadoop_namenode:/hadoop/dfs/name
+
+  datanode:
+    image: bde2020/hadoop-datanode:2.0.0-hadoop3.2.1-java8
+    container_name: reviewstream-datanode
+    restart: unless-stopped
+    depends_on:
+      - namenode
+    ports:
+      - "9864:9864"
+      - "9866:9866"
+    environment:
+      SERVICE_PRECONDITION: "namenode:9870"
+      CORE_CONF_fs_defaultFS: hdfs://namenode:9000
+      HDFS_CONF_dfs_replication: 1
+      HDFS_CONF_dfs_datanode_hostname: datanode
+      HDFS_CONF_dfs_client_use_datanode_hostname: "true"
+    volumes:
+      - hadoop_datanode:/hadoop/dfs/data
+
+  hive-metastore-postgresql:
+    image: bde2020/hive-metastore-postgresql:2.3.0
+    container_name: reviewstream-hive-metastore-postgresql
+    restart: unless-stopped
+    volumes:
+      - hive_postgres_data:/var/lib/postgresql/data
+
+  hive-metastore:
+    image: bde2020/hive:2.3.2-postgresql-metastore
+    container_name: reviewstream-hive-metastore
+    restart: unless-stopped
+    depends_on:
+      - namenode
+      - datanode
+      - hive-metastore-postgresql
+    ports:
+      - "9083:9083"
+    environment:
+      CORE_CONF_fs_defaultFS: hdfs://namenode:9000
+      HIVE_SITE_CONF_javax_jdo_option_ConnectionURL: jdbc:postgresql://hive-metastore-postgresql:5432/metastore
+      HIVE_SITE_CONF_javax_jdo_option_ConnectionDriverName: org.postgresql.Driver
+      HIVE_SITE_CONF_javax_jdo_option_ConnectionUserName: hive
+      HIVE_SITE_CONF_javax_jdo_option_ConnectionPassword: hive
+      HIVE_SITE_CONF_datanucleus_autoCreateSchema: "false"
+      HIVE_SITE_CONF_hive_metastore_schema_verification: "true"
+      SERVICE_PRECONDITION: "namenode:9870 datanode:9864 hive-metastore-postgresql:5432"
+    command: /opt/hive/bin/hive --service metastore
+
+  hive-server:
+    image: bde2020/hive:2.3.2-postgresql-metastore
+    container_name: reviewstream-hive-server
+    restart: unless-stopped
+    depends_on:
+      - hive-metastore
+    ports:
+      - "10000:10000"
+      - "10002:10002"
+    environment:
+      CORE_CONF_fs_defaultFS: hdfs://namenode:9000
+      HIVE_SITE_CONF_hive_server2_authentication: "NOSASL"
+      HIVE_SITE_CONF_javax_jdo_option_ConnectionURL: jdbc:postgresql://hive-metastore-postgresql:5432/metastore
+      HIVE_SITE_CONF_javax_jdo_option_ConnectionDriverName: org.postgresql.Driver
+      HIVE_SITE_CONF_javax_jdo_option_ConnectionUserName: hive
+      HIVE_SITE_CONF_javax_jdo_option_ConnectionPassword: hive
+      HIVE_SITE_CONF_hive_metastore_uris: thrift://hive-metastore:9083
+      SERVICE_PRECONDITION: "hive-metastore:9083"
+
+volumes:
+  hadoop_namenode:
+  hadoop_datanode:
+  hive_postgres_data:

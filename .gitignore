@@ -4,3 +4,9 @@ __pycache__/
 .env
 .pytest_cache/
 .DS_Store
+
+spark/checkpoints/
+spark/output/
+spark-warehouse/
+metastore_db/
+derby.log
