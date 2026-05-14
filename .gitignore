@@ -6,6 +6,12 @@ __pycache__/
 .mypy_cache/
 .DS_Store
 
+data/*
+!data/.gitkeep
+
+frontend/dist/
+frontend/node_modules/
+
 spark/checkpoints/
 spark/output/
 spark-warehouse/

@@ -1,114 +1,102 @@
 # Architecture
 
-ReviewStream is a local/demo data pipeline for product reviews. It is designed to show the
-movement from an API event to streaming storage and then back to a queryable analytics API.
+ReviewStream keeps the original FastAPI, Kafka, Spark, HDFS, and Hive architecture while adding a
+historical batch lane and a dashboard-ready analytics API.
 
-The services are unauthenticated and use local development defaults. Keep them on trusted local
-networks only.
+The project is unauthenticated and intended for local demos only.
 
-## End-To-End Flow
+## Data Flow
 
 ```text
-1. Client sends a review
-   POST /reviews -> FastAPI
+Historical batch:
+  Amazon Reviews.csv
+    -> spark/batch_ingest_amazon_reviews.py
+    -> HDFS /reviewstream/bronze/amazon_reviews_raw
+    -> HDFS /reviewstream/silver/reviews_enriched
 
-2. Backend validates the request
-   Pydantic ReviewIn -> ReviewEvent with review_id and created_at
+Live streaming:
+  Vue dashboard or curl
+    -> FastAPI POST /reviews
+    -> Kafka topic reviews
+    -> spark/streaming_to_hdfs.py
+    -> HDFS /reviewstream/bronze/reviews_raw
+    -> HDFS /reviewstream/silver/reviews_enriched
 
-3. Backend publishes the event
-   Kafka topic: reviews
-
-4. Spark Structured Streaming consumes Kafka
-   key/value/timestamp/partition/offset are read from Kafka
-
-5. Spark writes bronze data
-   HDFS JSON path: /reviewstream/bronze/reviews_raw
-
-6. Spark writes silver data
-   parsed review fields plus sentiment
-   HDFS Parquet path: /reviewstream/silver/reviews_enriched
-
-7. Hive exposes silver data
-   database: reviewstream
-   external table: reviews_enriched
-   location: /reviewstream/silver/reviews_enriched
-
-8. FastAPI analytics endpoints query Hive
-   GET /analytics/summary
-   GET /analytics/sentiment
-   GET /analytics/products
-   GET /analytics
-
-9. Future dashboard reads the API
-   frontend/dashboard work should consume the existing unauthenticated local API
+Serving:
+  Hive external table reviewstream.reviews_enriched
+    -> FastAPI analytics endpoints
+    -> Vue dashboard polling GET /analytics/dashboard
 ```
 
-## Components
+## Silver Schema
 
-FastAPI backend:
+Both batch and streaming jobs write the same normalized silver columns:
 
-- `POST /reviews` accepts validated review payloads.
-- Kafka producer sends JSON events to topic `reviews`.
-- Analytics routes query Hive with fixed backend-controlled SQL.
-- Analytics failures return a safe `503` response instead of leaking PyHive or Thrift details.
+```text
+kafka_key
+topic
+partition
+offset
+kafka_timestamp
+product_id
+user_id
+score
+text
+source
+review_id
+created_at
+sentiment
+text_length
+word_count
+has_negative_keywords
+has_positive_keywords
+```
 
-Kafka:
+Kafka metadata is `NULL` for historical Amazon CSV rows. Historical rows use
+`source = 'amazon_csv'`; live dashboard/API rows default to `source = 'web'`.
 
-- Topic: `reviews`.
-- Local bootstrap server: `localhost:9092`.
-- Internal Docker bootstrap server: `kafka:29092`.
-- Kafka UI is available at `http://localhost:8080`.
+## Enrichment
 
-Spark:
+Shared Spark helpers keep batch and streaming logic aligned:
 
-- `spark/streaming_to_hdfs.py` is the storage job for bronze and silver data.
-- `spark/streaming_reviews.py` is a console consumer example.
-- `spark/streaming_analytics.py` is a console streaming aggregation example.
-- `spark/read_silver_reviews.py` reads silver Parquet output for inspection.
+- `spark/review_schema.py` defines event schema, silver column order, and Kafka parsing.
+- `spark/sentiment.py` defines score sentiment and lightweight text keyword fields.
+- `spark/paths.py` centralizes configurable HDFS and CSV paths.
 
-HDFS:
+Sentiment rule:
 
-- Base path defaults to `hdfs://namenode:9000/reviewstream`.
-- Bronze raw Kafka JSON goes to `/reviewstream/bronze/reviews_raw`.
-- Silver enriched Parquet goes to `/reviewstream/silver/reviews_enriched`.
-- Checkpoints go under `/reviewstream/checkpoints`.
+```text
+score >= 4 -> positive
+score == 3 -> neutral
+otherwise -> negative
+```
+
+Keyword fields use simple word-boundary matching against small positive and negative keyword
+lists. This is intentionally lightweight text analytics, not full NLP.
+
+## Storage
+
+Bronze:
+
+- Live raw Kafka JSON: `/reviewstream/bronze/reviews_raw`
+- Cleaned Amazon CSV rows: `/reviewstream/bronze/amazon_reviews_raw`
+
+Silver:
+
+- Enriched Parquet: `/reviewstream/silver/reviews_enriched`
 
 Hive:
 
-- Metastore uses a PostgreSQL metastore DB container.
-- HiveServer2 listens on `localhost:10000`.
-- `hive/init.sql` creates the `reviewstream.reviews_enriched` external table.
+- Database: `reviewstream`
+- Table: `reviews_enriched`
+- Type: external Parquet table
+- Location: `/reviewstream/silver/reviews_enriched`
 
-Analytics API:
+## Serving
 
-- `GET /analytics/summary` returns total count, average score, and first/last review times.
-- `GET /analytics/sentiment` returns counts grouped by sentiment.
-- `GET /analytics/products` returns product score aggregates with `limit` constrained to 1-100.
-- `GET /analytics` returns the combined summary, sentiment, and default top products payload.
+FastAPI exposes fixed backend-controlled analytics queries. Numeric query parameters are validated
+with FastAPI `Query` constraints before being formatted into SQL. Hive/PyHive failures are logged
+internally and returned as safe `503` responses.
 
-## Data Shape
-
-Incoming review payload:
-
-```json
-{
-  "product_id": "P001",
-  "user_id": "client1",
-  "score": 5,
-  "text": "Great product",
-  "source": "web"
-}
-```
-
-The backend adds:
-
-```text
-review_id: UUID string
-created_at: UTC ISO timestamp
-```
-
-The silver Spark job adds:
-
-```text
-sentiment: positive when score >= 4, neutral when score == 3, otherwise negative
-```
+The dashboard polls `GET /analytics/dashboard` every few seconds and submits live reviews through
+`POST /reviews`.
