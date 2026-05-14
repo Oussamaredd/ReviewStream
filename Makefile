@@ -173,3 +173,34 @@ spark-read-silver:
 	PYSPARK_PYTHON="$(PWD)/$(PY)" \
 	PYSPARK_DRIVER_PYTHON="$(PWD)/$(PY)" \
 	$(SPARK_SUBMIT) spark/read_silver_reviews.py
+
+.PHONY: hive-wait hive-init hive-shell hive-query
+
+hive-wait:
+	@echo "Waiting for HiveServer2..."
+	@until docker exec reviewstream-hive-server beeline -u jdbc:hive2://localhost:10000 -n root -e "SELECT 1;" >/dev/null 2>&1; do \
+		echo "Hive not ready yet..."; \
+		sleep 5; \
+	done
+	@echo "Hive is ready."
+
+hive-init:
+	docker cp hive/init.sql reviewstream-hive-server:/tmp/reviewstream_hive_init.sql
+	docker exec reviewstream-hive-server beeline -u jdbc:hive2://localhost:10000 -n root -f /tmp/reviewstream_hive_init.sql
+
+hive-shell:
+	docker exec -it reviewstream-hive-server beeline -u jdbc:hive2://localhost:10000 -n root
+
+hive-query:
+	docker exec reviewstream-hive-server beeline -u jdbc:hive2://localhost:10000 -n root -e "USE reviewstream; SELECT sentiment, COUNT(*) AS review_count FROM reviews_enriched GROUP BY sentiment; SELECT product_id, COUNT(*) AS review_count, AVG(score) AS average_score FROM reviews_enriched GROUP BY product_id;"
+
+.PHONY: hive-metastore-init hive-tables
+
+hive-metastore-init:
+	docker compose stop hive-server hive-metastore || true
+	docker compose run --rm hive-metastore bash -lc '/opt/hive/bin/schematool -dbType postgres -info || /opt/hive/bin/schematool -dbType postgres -initSchema --verbose'
+	docker compose up -d hive-metastore hive-server
+	$(MAKE) hive-wait
+
+hive-tables:
+	docker exec reviewstream-hive-server beeline -u jdbc:hive2://localhost:10000/reviewstream -n root -e "SHOW TABLES; DESCRIBE reviews_enriched; SELECT COUNT(*) AS total_reviews FROM reviews_enriched; SELECT * FROM reviews_enriched LIMIT 10;"

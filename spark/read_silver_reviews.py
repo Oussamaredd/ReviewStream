@@ -6,13 +6,13 @@ from pyspark.sql.functions import col
 
 load_dotenv()
 
-HDFS_BASE_PATH = os.getenv("HDFS_BASE_PATH", "hdfs://localhost:9000/reviewstream")
+HDFS_BASE_PATH = os.getenv("HDFS_BASE_PATH", "hdfs://namenode:9000/reviewstream")
 
 
 def main() -> None:
     spark = (
         SparkSession.builder.appName("ReviewStreamReadSilver")
-        .config("spark.hadoop.fs.defaultFS", "hdfs://localhost:9000")
+        .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:9000")
         .config("spark.hadoop.dfs.client.use.datanode.hostname", "true")
         .getOrCreate()
     )
