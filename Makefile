@@ -178,7 +178,7 @@ spark-read-silver:
 
 hive-wait:
 	@echo "Waiting for HiveServer2..."
-	@until docker exec reviewstream-hive-server beeline -u jdbc:hive2://localhost:10000 -n root -e "SELECT 1;" >/dev/null 2>&1; do \
+	@until docker exec reviewstream-hive-server beeline -u 'jdbc:hive2://localhost:10000/reviewstream;auth=noSasl' -n root -e "SELECT 1;" >/dev/null 2>&1; do \
 		echo "Hive not ready yet..."; \
 		sleep 5; \
 	done
@@ -186,13 +186,13 @@ hive-wait:
 
 hive-init:
 	docker cp hive/init.sql reviewstream-hive-server:/tmp/reviewstream_hive_init.sql
-	docker exec reviewstream-hive-server beeline -u jdbc:hive2://localhost:10000 -n root -f /tmp/reviewstream_hive_init.sql
+	docker exec reviewstream-hive-server beeline -u 'jdbc:hive2://localhost:10000/reviewstream;auth=noSasl' -n root -f /tmp/reviewstream_hive_init.sql
 
 hive-shell:
-	docker exec -it reviewstream-hive-server beeline -u jdbc:hive2://localhost:10000 -n root
+	docker exec -it reviewstream-hive-server beeline -u 'jdbc:hive2://localhost:10000/reviewstream;auth=noSasl' -n root
 
 hive-query:
-	docker exec reviewstream-hive-server beeline -u jdbc:hive2://localhost:10000 -n root -e "USE reviewstream; SELECT sentiment, COUNT(*) AS review_count FROM reviews_enriched GROUP BY sentiment; SELECT product_id, COUNT(*) AS review_count, AVG(score) AS average_score FROM reviews_enriched GROUP BY product_id;"
+	docker exec reviewstream-hive-server beeline -u 'jdbc:hive2://localhost:10000/reviewstream;auth=noSasl' -n root -e "USE reviewstream; SELECT sentiment, COUNT(*) AS review_count FROM reviews_enriched GROUP BY sentiment; SELECT product_id, COUNT(*) AS review_count, AVG(score) AS average_score FROM reviews_enriched GROUP BY product_id;"
 
 .PHONY: hive-metastore-init hive-tables
 
@@ -203,4 +203,4 @@ hive-metastore-init:
 	$(MAKE) hive-wait
 
 hive-tables:
-	docker exec reviewstream-hive-server beeline -u jdbc:hive2://localhost:10000/reviewstream -n root -e "SHOW TABLES; DESCRIBE reviews_enriched; SELECT COUNT(*) AS total_reviews FROM reviews_enriched; SELECT * FROM reviews_enriched LIMIT 10;"
+	docker exec reviewstream-hive-server beeline -u 'jdbc:hive2://localhost:10000/reviewstream;auth=noSasl' -n root -e "SHOW TABLES; DESCRIBE reviews_enriched; SELECT COUNT(*) AS total_reviews FROM reviews_enriched; SELECT * FROM reviews_enriched LIMIT 10;"
