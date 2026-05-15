@@ -29,9 +29,47 @@ Example:
 
 ## Reviews
 
+### GET /products
+
+Returns the static ecommerce demo catalog. This endpoint does not query Kafka, Spark, HDFS, or
+Hive.
+
+### GET /products/{product_id}
+
+Returns one catalog product or `404`:
+
+```json
+{"detail": "Product not found"}
+```
+
+### POST /products/{product_id}/reviews
+
+Client-facing review endpoint used by the Products page. The user submits only score and opinion
+text. The backend validates the catalog product, sets `user_id = web-client`, sets `source = web`,
+creates the review event, and publishes it to Kafka.
+
+Request:
+
+```json
+{
+  "score": 5,
+  "text": "Great product, fresh and tasty."
+}
+```
+
+Rules:
+
+| Field | Rules |
+| --- | --- |
+| `score` | required integer, 1-5 |
+| `text` | required, 1-2000 characters |
+
+Response status: `201 Created`.
+
 ### POST /reviews
 
-Publishes a review event to Kafka.
+Publishes a full review event to Kafka. This endpoint remains available for API tests and direct
+integration calls.
 
 Request:
 
@@ -59,8 +97,8 @@ Response status: `201 Created`.
 
 ## Analytics
 
-All analytics endpoints query Hive table `reviewstream.reviews_enriched`. If Hive is unavailable,
-they return status `503`:
+Analytics endpoints query Hive table `reviewstream.reviews_enriched`. Most analytics endpoints
+return status `503` when Hive is unavailable:
 
 ```json
 {"detail": "Analytics service is unavailable"}
@@ -113,13 +151,39 @@ Returns products with the lowest average score, filtered by minimum review count
 
 ### GET /analytics/recent?limit=20
 
-Returns newest reviews ordered by `created_at DESC`.
+Returns newest reviews ordered by `created_at DESC`, including review/opinion text fields:
+
+- `product_id`
+- `product_name` when the static catalog knows the product
+- `user_id`
+- `score`
+- `sentiment`
+- `text`
+- `source`
+- `review_id`
+- `created_at`
+- `text_length`
+- `word_count`
+- `has_negative_keywords`
+- `has_positive_keywords`
 
 Parameters:
 
 | Name | Default | Rules |
 | --- | --- | --- |
 | `limit` | `20` | integer, 1-100 |
+
+### GET /analytics/opinions?limit=50&sentiment=positive
+
+Returns newest review/opinion text rows. `sentiment` is optional and must be one of `positive`,
+`neutral`, or `negative` when provided.
+
+Parameters:
+
+| Name | Default | Rules |
+| --- | --- | --- |
+| `limit` | `50` | integer, 1-100 |
+| `sentiment` | none | `positive`, `neutral`, or `negative` |
 
 ### GET /analytics/negative-products?limit=10&min_reviews=3
 
@@ -139,17 +203,41 @@ Returns the count of reviews containing one or more positive keywords.
 
 ### GET /analytics/dashboard
 
-Returns the dashboard payload:
+Returns the dashboard payload. Successful responses are cached in process memory.
 
 ```json
 {
-  "summary": {},
+  "status": "fresh",
+  "stale": false,
+  "generated_at": "2026-01-01T00:00:00+00:00",
+  "summary": {
+    "total_reviews": 0,
+    "average_score": 0,
+    "first_review_at": null,
+    "last_review_at": null
+  },
   "sentiment": [],
   "score_distribution": [],
   "top_products": [],
   "worst_products": [],
   "negative_products": [],
   "recent_reviews": [],
-  "sources": []
+  "sources": [],
+  "opinions": [],
+  "negative_keywords": {"keyword_type": "negative", "matching_reviews": 0},
+  "positive_keywords": {"keyword_type": "positive", "matching_reviews": 0}
 }
 ```
+
+Dashboard states:
+
+- Fresh: Hive query succeeded; response has `status = fresh` and `stale = false`.
+- Cached: Hive failed after a previous success; response has `status = cached`, `stale = true`,
+  and `warning = "Hive is unavailable. Showing last successful analytics snapshot."`.
+- Sample: default dashboard requests use `prefer_cache=true&allow_sample=true`. If no process
+  cache exists yet, the API returns analytics computed from committed `data/sample_reviews.csv`
+  with `status = sample` while a throttled background refresh attempts Hive.
+- Strict cold start: callers that request
+  `/analytics/dashboard?prefer_cache=false&allow_sample=false` get `503` when Hive fails before
+  any successful dashboard.
+- Empty: Hive is reachable but has zero rows; response is `200` with zero and empty-list defaults.

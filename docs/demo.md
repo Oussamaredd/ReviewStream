@@ -11,7 +11,13 @@ cp .env.example .env
 cd frontend && npm install && cd ..
 ```
 
-Place the Amazon Fine Food Reviews CSV here:
+For the quick demo, use the committed fake sample data:
+
+```text
+data/sample_reviews.csv
+```
+
+For the full historical demo, place the Amazon Fine Food Reviews CSV here:
 
 ```text
 data/Reviews.csv
@@ -26,28 +32,47 @@ https://www.kaggle.com/datasets/snap/amazon-fine-food-reviews
 Extract the Kaggle archive and copy `Reviews.csv` to `data/Reviews.csv`. Do not commit the CSV;
 `data/Reviews.csv` is ignored and `data/.gitkeep` is the only tracked file in `data/`.
 
-## 2. Run Finite Setup
+## 2. Run Infrastructure Setup
+
+```bash
+make docker-up
+make kafka-topic
+make hdfs-wait
+make hdfs-init
+make hive-metastore-init
+make hive-wait
+make hive-init
+```
+
+Print the full command order any time with:
 
 ```bash
 make demo-full
 ```
 
-This runs:
+## 3. Seed Data
 
-```text
-docker-up
-kafka-topic
-hdfs-wait
-hdfs-init
-hive-metastore-init
-hive-wait
-hive-init
-batch-amazon when data/Reviews.csv exists
+Path A, quick demo:
+
+```bash
+make seed-sample
 ```
 
-It does not leave API or Spark streaming running forever; those are started separately.
+Path B, full historical demo:
 
-## 3. Start Long-Running Services
+```bash
+make batch-amazon
+```
+
+Path C, live streaming demo after the services are running:
+
+```bash
+make spark-storage
+```
+
+Submit a review from the Products page.
+
+## 4. Start Long-Running Services
 
 Terminal 1:
 
@@ -64,30 +89,46 @@ make spark-storage
 Terminal 3:
 
 ```bash
-cd frontend && npm run dev
+make frontend-dev
 ```
 
 Open:
 
 ```text
-http://localhost:5173
+http://localhost:5173/products
+http://localhost:5173/analytics
 ```
 
-## 4. Demo Script
+## 5. Demo Script
 
-1. Open the dashboard and confirm historical metrics are visible.
-2. Submit a live review from the form.
-3. Show the success message with Kafka offset.
-4. Wait for Spark to write silver data.
-5. Watch dashboard totals update through polling.
-6. Open Kafka UI at `http://localhost:8080` if you want to show the live topic.
-7. Open HDFS NameNode UI at `http://localhost:9870` if you want to show bronze/silver paths.
+1. Open Products and choose a catalog item.
+2. Submit only a score and opinion text.
+3. Show the success message: "Review queued. Analytics will update after Spark and Hive catch up."
+4. Open Analytics and confirm metrics, product tables, source counts, and opinion text are visible.
+5. Wait for Spark to write silver data if demonstrating live reviews.
+6. Watch dashboard totals update through polling.
+7. Stop Hive temporarily after one successful dashboard response to show cached analytics.
+8. Open Kafka UI at `http://localhost:8080` if you want to show the live topic.
+9. Open HDFS NameNode UI at `http://localhost:9870` if you want to show bronze/silver paths.
 
-## 5. Readiness Check
+## 6. Dashboard States
+
+- Fresh: Hive query succeeded.
+- Cached: Hive is unavailable, but the API serves the last successful dashboard snapshot.
+- Sample: first paint can show committed sample analytics while the API warms the Hive cache.
+- Strict cold start: direct strict API calls can still return `503` when Hive is unavailable and no
+  cache exists.
+- Empty: Hive is available but no rows exist. The dashboard renders zero and empty-list defaults.
+
+Live analytics are eventually consistent; Kafka acceptance happens before Spark and Hive reads
+catch up.
+
+## 7. Readiness Check
 
 ```bash
 make dashboard-ready-check
 ```
 
-The command checks HDFS paths, Hive table availability, and the dashboard analytics API when the
-API is running.
+The command checks HDFS readiness, expected HDFS paths, Hive readiness, Hive table availability,
+and the API when it is running. It prints next steps instead of failing unclearly on optional
+checks.

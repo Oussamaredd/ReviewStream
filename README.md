@@ -4,7 +4,7 @@ ReviewStream is a local Big Data ecommerce review analytics project. It demonstr
 paths that land in the same Hive-backed analytics table:
 
 - Historical batch ingestion from Amazon Fine Food Reviews `Reviews.csv`.
-- Live review streaming from the dashboard/API through Kafka and Spark.
+- Live review streaming from the Products page/API through Kafka and Spark.
 
 The project is for local development and demos. The API, dashboard, and Docker services are
 unauthenticated and must not be exposed directly to the public internet.
@@ -19,18 +19,18 @@ Historical path:
     -> HDFS silver reviews_enriched
     -> Hive reviewstream.reviews_enriched
     -> FastAPI analytics
-    -> Vue dashboard
+    -> Vue Analytics page
 
 Live path:
-  Vue dashboard
-    -> FastAPI POST /reviews
+  Vue Products page
+    -> FastAPI POST /products/{product_id}/reviews
     -> Kafka topic reviews
     -> Spark Structured Streaming
     -> HDFS bronze reviews_raw
     -> HDFS silver reviews_enriched
     -> Hive reviewstream.reviews_enriched
     -> FastAPI analytics
-    -> Vue dashboard
+    -> Vue Analytics page
 ```
 
 Silver rows include normalized review fields, score-based sentiment, and lightweight text
@@ -48,7 +48,8 @@ analytics:
 - Node.js 20+ for the dashboard
 - Amazon Fine Food Reviews CSV when running historical ingestion
 
-Do not commit `data/Reviews.csv`; `data/` is ignored except for `data/.gitkeep`.
+Do not commit `data/Reviews.csv`; `data/` is ignored except for `data/.gitkeep` and the tiny
+fake `data/sample_reviews.csv`.
 
 ## Setup
 
@@ -66,29 +67,66 @@ AMAZON_REVIEWS_CSV=data/Reviews.csv
 HDFS_BASE_PATH=hdfs://namenode:9000/reviewstream
 ```
 
+## Application Pages
+
+- Products: `http://localhost:5173/products`
+- Analytics: `http://localhost:5173/analytics`
+
+The Products page shows a static ecommerce-style catalog from `GET /products`. Users select a
+product and submit only a score plus opinion text. The backend attaches `product_id`, a demo
+`user_id`, and `source = web`, publishes the event to Kafka, and Spark/Hive analytics update after
+the stream writes silver data.
+
+The Analytics page polls `GET /analytics/dashboard` and shows summary metrics, distributions,
+product tables, source counts, keyword counts, and recent review/opinion text.
+
+## Dashboard States
+
+- Fresh: Hive query succeeded and the API returned a new dashboard snapshot.
+- Cached: Hive is unavailable, but the API returned the last successful dashboard snapshot.
+- Sample: first paint can use committed `data/sample_reviews.csv` while Hive warms up.
+- Strict cold start: direct strict calls can still return `503` when Hive is unavailable and no
+  cached dashboard exists yet.
+- Empty: Hive is reachable but the table has no rows; the dashboard returns safe zero/empty values.
+
 ## Full Local Demo
 
-Place `Reviews.csv` at `data/Reviews.csv`, then run the finite setup:
+Print the command order:
 
 ```bash
 make demo-full
 ```
 
-`demo-full` starts infrastructure, initializes HDFS/Hive, runs historical batch ingestion when the
-CSV exists, and then prints the long-running commands to start separately.
+Quick demo with committed fake data:
+
+```bash
+make docker-up
+make kafka-topic
+make hdfs-wait
+make hdfs-init
+make hive-metastore-init
+make hive-init
+make seed-sample
+```
 
 Start these in separate terminals:
 
 ```bash
 make api
-make spark-storage
-cd frontend && npm run dev
+make frontend-dev
 ```
 
-Open the dashboard at the Vite URL, usually:
+Optional live streaming:
+
+```bash
+make spark-storage
+```
+
+Open:
 
 ```text
-http://localhost:5173
+http://localhost:5173/products
+http://localhost:5173/analytics
 ```
 
 Check readiness:
@@ -98,6 +136,14 @@ make dashboard-ready-check
 ```
 
 ## Historical Batch Ingestion
+
+Path A, quick sample data:
+
+```bash
+make seed-sample
+```
+
+Path B, full historical demo:
 
 Download the Amazon Fine Food Reviews dataset from Kaggle:
 
@@ -111,10 +157,7 @@ Extract `Reviews.csv` and place it at:
 data/Reviews.csv
 ```
 
-The CSV is intentionally ignored by git. Commit only `data/.gitkeep` so the expected local
-directory exists for new clones.
-
-Default:
+Then run:
 
 ```bash
 make batch-amazon
@@ -131,6 +174,18 @@ HDFS path:
 ```bash
 make batch-amazon AMAZON_REVIEWS_CSV=hdfs://namenode:9000/data/Reviews.csv
 ```
+
+Path C, live streaming demo:
+
+```bash
+make api
+make spark-storage
+cd frontend && npm run dev
+```
+
+Submit a review from the Products page. Analytics are eventually consistent: a successful API
+response means the review is queued in Kafka; Spark and Hive-backed analytics update after the
+stream writes silver data.
 
 The batch job reads CSV with headers, inferred schema, multiline support, and quote escaping. It
 requires `Id`, `ProductId`, `UserId`, `Score`, `Text`, and `Time`, writes cleaned raw rows to
@@ -151,7 +206,7 @@ Start the Spark storage stream:
 make spark-storage
 ```
 
-Submit a review from the dashboard or with:
+Submit a review from the Products page or with:
 
 ```bash
 make test-review
@@ -159,6 +214,27 @@ make test-review
 
 Analytics are eventually consistent: a successful API response means the review is queued in
 Kafka; Spark and Hive-backed analytics update after the stream writes silver data.
+
+## Product Catalog And Review API
+
+Catalog endpoints do not depend on Hive, Kafka, Spark, or HDFS:
+
+```text
+GET /products
+GET /products/{product_id}
+```
+
+Client review endpoint:
+
+```text
+POST /products/{product_id}/reviews
+```
+
+Request body:
+
+```json
+{"score": 5, "text": "Great product, fresh and tasty."}
+```
 
 ## Hive
 
@@ -186,6 +262,9 @@ Core:
 
 - `GET /`
 - `GET /health`
+- `GET /products`
+- `GET /products/{product_id}`
+- `POST /products/{product_id}/reviews`
 - `POST /reviews`
 
 Analytics:
@@ -198,17 +277,21 @@ Analytics:
 - `GET /analytics/top-products?limit=10&min_reviews=5`
 - `GET /analytics/worst-products?limit=10&min_reviews=5`
 - `GET /analytics/recent?limit=20`
+- `GET /analytics/opinions?limit=50&sentiment=positive`
 - `GET /analytics/negative-products?limit=10&min_reviews=3`
 - `GET /analytics/sources`
 - `GET /analytics/keywords/negative`
 - `GET /analytics/keywords/positive`
 - `GET /analytics/dashboard`
 
-If Hive is unavailable, analytics endpoints return:
+If Hive is unavailable, most analytics endpoints return:
 
 ```json
 {"detail": "Analytics service is unavailable"}
 ```
+
+`GET /analytics/dashboard` returns cached data with `status = cached` when a previous successful
+snapshot exists.
 
 ## Services And Ports
 
