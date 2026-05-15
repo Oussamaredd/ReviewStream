@@ -26,6 +26,17 @@ make hive-init
 
 ## Historical Data
 
+Quick sample data:
+
+```bash
+make seed-sample
+```
+
+The committed `data/sample_reviews.csv` is tiny and fake. Product IDs match the static catalog so
+the Analytics page can show product names.
+
+Full historical data:
+
 Put Amazon Fine Food Reviews at:
 
 ```text
@@ -59,14 +70,18 @@ Start long-running processes in separate terminals:
 ```bash
 make api
 make spark-storage
-cd frontend && npm run dev
+make frontend-dev
 ```
 
-Submit a sample review:
+Submit a review from `http://localhost:5173/products` or send a full event:
 
 ```bash
 make test-review
 ```
+
+The Products page submits only `score` and opinion text to
+`POST /products/{product_id}/reviews`; the backend fills in product id, demo user id, and source
+before publishing to Kafka.
 
 ## Checks
 
@@ -75,6 +90,16 @@ make dashboard-ready-check
 make hive-tables
 curl http://localhost:8000/analytics/dashboard
 ```
+
+Dashboard states:
+
+- Fresh: Hive query succeeded.
+- Cached: Hive is unavailable, but the API serves the last successful dashboard snapshot.
+- Sample: default dashboard requests show committed sample analytics if Hive is not ready and no
+  cache exists.
+- Strict cold start: direct strict API calls can still return `503` when Hive is unavailable and no
+  cached dashboard exists.
+- Empty: Hive reachable but the table has zero rows.
 
 ## Stop
 

@@ -15,8 +15,8 @@ Historical batch:
     -> HDFS /reviewstream/silver/reviews_enriched
 
 Live streaming:
-  Vue dashboard or curl
-    -> FastAPI POST /reviews
+  Vue Products page or curl
+    -> FastAPI POST /products/{product_id}/reviews or POST /reviews
     -> Kafka topic reviews
     -> spark/streaming_to_hdfs.py
     -> HDFS /reviewstream/bronze/reviews_raw
@@ -25,8 +25,22 @@ Live streaming:
 Serving:
   Hive external table reviewstream.reviews_enriched
     -> FastAPI analytics endpoints
-    -> Vue dashboard polling GET /analytics/dashboard
+    -> Vue Analytics page polling GET /analytics/dashboard
 ```
+
+## Application Surface
+
+The Vue app is split into two primary pages:
+
+- Products page: loads the static product catalog from `GET /products` and submits reviews through
+  `POST /products/{product_id}/reviews`.
+- Analytics page: polls `GET /analytics/dashboard` for summary metrics, product tables,
+  distributions, keyword counts, and review/opinion text.
+
+The product catalog is a backend static module, not a database. Catalog endpoints stay available
+when Kafka, Spark, HDFS, or Hive are offline. The client-facing product review endpoint validates
+the catalog product, accepts only `score` and `text`, attaches `product_id`, a demo `user_id`, and
+`source = web`, then publishes the same event schema used by `POST /reviews`.
 
 ## Silver Schema
 
@@ -98,5 +112,20 @@ FastAPI exposes fixed backend-controlled analytics queries. Numeric query parame
 with FastAPI `Query` constraints before being formatted into SQL. Hive/PyHive failures are logged
 internally and returned as safe `503` responses.
 
-The dashboard polls `GET /analytics/dashboard` every few seconds and submits live reviews through
-`POST /reviews`.
+Only `GET /analytics/dashboard` has a process-local in-memory fallback cache. Fresh successful
+dashboard responses are normalized, tagged with `status`, `stale`, and `generated_at`, and stored.
+If Hive later fails, the endpoint returns the cached snapshot with `status = cached`, `stale = true`,
+and a warning. Strict callers can request
+`/analytics/dashboard?prefer_cache=false&allow_sample=false` to receive `503` when Hive fails
+before any successful dashboard.
+
+Default dashboard requests use `prefer_cache=true&allow_sample=true`: they return the process cache
+immediately when it exists. If no process cache exists, they return a sample dashboard computed
+from committed `data/sample_reviews.csv` and start a throttled background Hive refresh. This keeps
+the Analytics page visible while HiveServer2 or MapReduce jobs warm up.
+
+Empty Hive tables are valid. The dashboard summary defaults to zero/null values and list sections
+default to empty lists so the frontend can render cold demos without null-breaking payloads.
+
+Individual analytics endpoints such as `/analytics/sentiment` and `/analytics/opinions` still
+return `503` on Hive failures.

@@ -8,6 +8,7 @@ __pycache__/
 
 data/*
 !data/.gitkeep
+!data/sample_reviews.csv
 
 frontend/dist/
 frontend/node_modules/
