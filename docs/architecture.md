@@ -5,6 +5,19 @@ historical batch lane and a dashboard-ready analytics API.
 
 The project is unauthenticated and intended for local demos only.
 
+## Runtime Shape
+
+Docker runs the stateful infrastructure: one KRaft Kafka broker, HDFS NameNode/DataNode,
+`hive-metastore-db` for Hive metadata persistence, Hive Metastore, and HiveServer2. Kafka UI and
+ZooKeeper are intentionally not part of the lightweight demo stack.
+
+Spark is submitted from the host with `spark-submit` through the Makefile. It is the processing
+engine, but it is not a persistent Docker service in this prototype. The default Spark settings are
+tuned for lower CPU: `local[1]`, one shuffle partition, `1g` driver memory, and a 30-second
+streaming trigger. Host Spark uses `hdfs://localhost:9000/reviewstream`; Docker-only names such as
+`namenode` are reserved for containers on the Compose network. HDFS advertises the DataNode as
+`host.docker.internal` so Spark can move blocks from the host through Docker's published port.
+
 ## Data Flow
 
 ```text
@@ -106,11 +119,25 @@ Hive:
 - Type: external Parquet table
 - Location: `/reviewstream/silver/reviews_enriched`
 
+Hive service responsibilities:
+
+- HDFS stores the actual review files.
+- Hive Metastore stores and serves table names, schemas, partitions, and HDFS locations.
+- `hive-metastore-db` is PostgreSQL used only by Hive Metastore to persist metadata.
+- HiveServer2 accepts SQL queries from the API and reads Hive table data from HDFS.
+
 ## Serving
 
 FastAPI exposes fixed backend-controlled analytics queries. Numeric query parameters are validated
 with FastAPI `Query` constraints before being formatted into SQL. Hive/PyHive failures are logged
 internally and returned as safe `503` responses.
+
+The analytics backend is split by responsibility so the prototype is easier to explain and change:
+
+- `backend/app/analytics.py` owns FastAPI route wiring.
+- `backend/app/analytics_queries.py` owns fixed Hive query execution.
+- `backend/app/analytics_dashboard.py` owns dashboard cache, sample, and freshness behavior.
+- `backend/app/analytics_payloads.py` owns response normalization and dashboard safety checks.
 
 Only `GET /analytics/dashboard` has a process-local in-memory fallback cache. Fresh successful
 dashboard responses are normalized, tagged with `status`, `stale`, and `generated_at`, and stored.
@@ -121,8 +148,10 @@ before any successful dashboard.
 
 Default dashboard requests use `prefer_cache=true&allow_sample=true`: they return the process cache
 immediately when it exists. If no process cache exists, they return a sample dashboard computed
-from committed `data/sample_reviews.csv` and start a throttled background Hive refresh. This keeps
-the Analytics page visible while HiveServer2 or MapReduce jobs warm up.
+from committed `data/sample_reviews.csv`. Automatic background Hive refresh is disabled by default
+so the local demo does not start expensive Hive aggregate jobs while the frontend is only asking for
+a fast dashboard. Set `DASHBOARD_BACKGROUND_REFRESH_ENABLED=true` to opt into throttled background
+refreshes.
 
 Empty Hive tables are valid. The dashboard summary defaults to zero/null values and list sections
 default to empty lists so the frontend can render cold demos without null-breaking payloads.

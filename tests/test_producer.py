@@ -1,5 +1,8 @@
 from typing import Any
 
+import pytest
+from kafka.errors import KafkaTimeoutError
+
 from backend.app import producer
 
 
@@ -11,7 +14,7 @@ class FakeMetadata:
 
 class FakeFuture:
     def get(self, timeout: int) -> FakeMetadata:
-        assert timeout == 10
+        assert timeout == producer.KAFKA_SEND_TIMEOUT_SECONDS
         return FakeMetadata()
 
 
@@ -33,7 +36,7 @@ def test_send_review_publishes_to_configured_topic(monkeypatch) -> None:
         "text": "Great product",
     }
 
-    monkeypatch.setattr(producer, "get_producer", lambda: fake_producer)
+    monkeypatch.setattr(producer, "get_producer", lambda connect_attempts=3: fake_producer)
 
     metadata = producer.send_review(event)
 
@@ -43,3 +46,30 @@ def test_send_review_publishes_to_configured_topic(monkeypatch) -> None:
         "value": event,
     }
     assert metadata == {"topic": "reviews", "partition": 1, "offset": 42}
+
+
+def test_send_review_resets_failed_producer(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FailingProducer:
+        def send(self, topic: str, key: str, value: dict[str, Any]) -> None:
+            raise KafkaTimeoutError("timed out")
+
+    reset_calls = 0
+
+    def fake_reset_producer() -> None:
+        nonlocal reset_calls
+        reset_calls += 1
+
+    monkeypatch.setattr(producer, "get_producer", lambda connect_attempts=3: FailingProducer())
+    monkeypatch.setattr(producer, "reset_producer", fake_reset_producer)
+
+    with pytest.raises(producer.KafkaUnavailableError):
+        producer.send_review(
+            {
+                "product_id": "P001",
+                "user_id": "client1",
+                "score": 5,
+                "text": "Great product",
+            }
+        )
+
+    assert reset_calls == producer.KAFKA_SEND_ATTEMPTS

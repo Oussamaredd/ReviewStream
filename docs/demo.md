@@ -36,6 +36,7 @@ Extract the Kaggle archive and copy `Reviews.csv` to `data/Reviews.csv`. Do not 
 
 ```bash
 make docker-up
+make kafka-wait
 make kafka-topic
 make hdfs-wait
 make hdfs-init
@@ -71,6 +72,9 @@ make spark-storage
 ```
 
 Submit a review from the Products page.
+
+Spark is not always running. Start `make spark-storage` only for the live-review part of the demo;
+the seeded dashboard works without the streaming job.
 
 ## 4. Start Long-Running Services
 
@@ -108,14 +112,16 @@ http://localhost:5173/analytics
 5. Wait for Spark to write silver data if demonstrating live reviews.
 6. Watch dashboard totals update through polling.
 7. Stop Hive temporarily after one successful dashboard response to show cached analytics.
-8. Open Kafka UI at `http://localhost:8080` if you want to show the live topic.
+8. Use `make consume` if you want to show Kafka messages from the terminal.
 9. Open HDFS NameNode UI at `http://localhost:9870` if you want to show bronze/silver paths.
 
 ## 6. Dashboard States
 
 - Fresh: Hive query succeeded.
 - Cached: Hive is unavailable, but the API serves the last successful dashboard snapshot.
-- Sample: first paint can show committed sample analytics while the API warms the Hive cache.
+- Sample: first paint can show committed sample analytics. Automatic background Hive refresh is
+  disabled by default for the lightweight demo; set `DASHBOARD_BACKGROUND_REFRESH_ENABLED=true`
+  only when you want the API to warm the Hive cache on its own.
 - Strict cold start: direct strict API calls can still return `503` when Hive is unavailable and no
   cache exists.
 - Empty: Hive is available but no rows exist. The dashboard renders zero and empty-list defaults.

@@ -64,8 +64,18 @@ Default local paths:
 
 ```text
 AMAZON_REVIEWS_CSV=data/Reviews.csv
-HDFS_BASE_PATH=hdfs://namenode:9000/reviewstream
+HDFS_BASE_PATH=hdfs://localhost:9000/reviewstream
 ```
+
+Spark is not a long-running Docker container in this prototype. The Makefile runs Spark jobs from
+the local Python virtual environment with low-CPU defaults: `local[1]`, `1g` driver memory, one
+shuffle partition, and a 30-second streaming trigger.
+
+Host-run Spark uses `hdfs://localhost:9000/reviewstream` by default because Docker service names
+such as `namenode` only resolve inside the Compose network. HDFS advertises the DataNode as
+`host.docker.internal` so Spark can write data from the host without joining the Docker network.
+Spark Kafka streams also default `SPARK_KAFKA_FAIL_ON_DATA_LOSS=false` so local topic resets do not
+break old HDFS checkpoints during demos.
 
 ## Application Pages
 
@@ -80,11 +90,17 @@ the stream writes silver data.
 The Analytics page polls `GET /analytics/dashboard` and shows summary metrics, distributions,
 product tables, source counts, keyword counts, and recent review/opinion text.
 
+The backend keeps route wiring, fixed Hive queries, dashboard fallback behavior, and review
+queueing in separate modules. This keeps the school-demo prototype readable without changing the
+pipeline or API contract.
+
 ## Dashboard States
 
 - Fresh: Hive query succeeded and the API returned a new dashboard snapshot.
 - Cached: Hive is unavailable, but the API returned the last successful dashboard snapshot.
-- Sample: first paint can use committed `data/sample_reviews.csv` while Hive warms up.
+- Sample: first paint can use committed `data/sample_reviews.csv`. Background Hive refresh is
+  disabled by default to keep the local demo light; set `DASHBOARD_BACKGROUND_REFRESH_ENABLED=true`
+  when you want the API to warm the cache on its own.
 - Strict cold start: direct strict calls can still return `503` when Hive is unavailable and no
   cached dashboard exists yet.
 - Empty: Hive is reachable but the table has no rows; the dashboard returns safe zero/empty values.
@@ -101,6 +117,7 @@ Quick demo with committed fake data:
 
 ```bash
 make docker-up
+make kafka-wait
 make kafka-topic
 make hdfs-wait
 make hdfs-init
@@ -133,6 +150,14 @@ Check readiness:
 
 ```bash
 make dashboard-ready-check
+```
+
+If review submission returns `503`, check Kafka from the API side:
+
+```bash
+make kafka-wait
+make kafka-topic
+make kafka-health
 ```
 
 ## Historical Batch Ingestion
@@ -172,7 +197,7 @@ make batch-amazon AMAZON_REVIEWS_CSV=/path/to/Reviews.csv
 HDFS path:
 
 ```bash
-make batch-amazon AMAZON_REVIEWS_CSV=hdfs://namenode:9000/data/Reviews.csv
+make batch-amazon AMAZON_REVIEWS_CSV=hdfs://localhost:9000/data/Reviews.csv
 ```
 
 Path C, live streaming demo:
@@ -300,11 +325,11 @@ snapshot exists.
 | FastAPI | `8000` |
 | Vite dashboard | `5173` |
 | Kafka | `9092` |
-| Kafka UI | `8080` |
 | HDFS NameNode UI | `9870` |
 | HDFS NameNode RPC | `9000` |
 | HDFS DataNode | `9864`, `9866` |
 | Hive Metastore | `9083` |
+| Hive metadata DB | internal only |
 | HiveServer2 | `10000`, `10002` |
 
 ## Tests And CI

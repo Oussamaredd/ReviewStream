@@ -21,6 +21,7 @@ const form = reactive({
 });
 
 const textLength = computed(() => form.text.length);
+const scoreLabel = computed(() => `${form.score} ${form.score === 1 ? "star" : "stars"}`);
 const canSubmit = computed(() => {
   return form.text.trim() && textLength.value <= 2000 && !props.submitting;
 });
@@ -57,16 +58,19 @@ function submitReview() {
 
     <div class="field">
       <span>Score</span>
-      <div class="score-control">
+      <div class="star-rating" role="radiogroup" aria-label="Review score">
         <button
           v-for="score in scoreOptions"
           :key="score"
           type="button"
-          :class="['score-button', { active: form.score === score }]"
+          :class="['star-button', { active: score <= form.score }]"
+          :aria-label="`${score} ${score === 1 ? 'star' : 'stars'}`"
+          :aria-pressed="form.score === score"
           @click="form.score = score"
         >
-          {{ score }}
+          <span aria-hidden="true">★</span>
         </button>
+        <strong>{{ scoreLabel }}</strong>
       </div>
     </div>
 

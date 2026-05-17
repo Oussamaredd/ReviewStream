@@ -27,6 +27,21 @@ Example:
 }
 ```
 
+### GET /health/kafka
+
+Actively probes Kafka from the API process. Use this when review submission returns `503`.
+
+Example:
+
+```json
+{
+  "status": "ok",
+  "available": true,
+  "bootstrap_servers": ["127.0.0.1:9092"],
+  "topic": "reviews"
+}
+```
+
 ## Reviews
 
 ### GET /products
@@ -236,7 +251,8 @@ Dashboard states:
   and `warning = "Hive is unavailable. Showing last successful analytics snapshot."`.
 - Sample: default dashboard requests use `prefer_cache=true&allow_sample=true`. If no process
   cache exists yet, the API returns analytics computed from committed `data/sample_reviews.csv`
-  with `status = sample` while a throttled background refresh attempts Hive.
+  with `status = sample`. Automatic background Hive refresh is disabled by default for local demos;
+  enable `DASHBOARD_BACKGROUND_REFRESH_ENABLED=true` to refresh the process cache asynchronously.
 - Strict cold start: callers that request
   `/analytics/dashboard?prefer_cache=false&allow_sample=false` get `503` when Hive fails before
   any successful dashboard.

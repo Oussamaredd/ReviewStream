@@ -7,8 +7,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from .analytics import router as analytics_router
 from .catalog import get_product, list_products
 from .config import settings
-from .models import ProductReviewIn, ReviewEvent, ReviewIn
-from .producer import close_producer, send_review
+from .models import ProductReviewIn, ReviewIn
+from .producer import KafkaUnavailableError, close_producer, probe_kafka
+from .review_service import queue_review
 
 
 @asynccontextmanager
@@ -48,19 +49,15 @@ def health() -> dict[str, str]:
     }
 
 
-def queue_review(review: ReviewIn) -> dict[str, object]:
-    event = ReviewEvent.from_review(review).model_dump()
+@app.get("/health/kafka")
+def kafka_health() -> dict[str, object]:
+    return probe_kafka()
 
+
+def review_response(review: ReviewIn) -> dict[str, object]:
     try:
-        kafka_metadata = send_review(event)
-
-        return {
-            "message": "Review sent to Kafka",
-            "kafka": kafka_metadata,
-            "review": event,
-        }
-
-    except RuntimeError as error:
+        return queue_review(review)
+    except KafkaUnavailableError as error:
         raise HTTPException(status_code=503, detail=str(error)) from error
 
     except Exception as error:
@@ -86,7 +83,7 @@ def create_product_review(product_id: str, review: ProductReviewIn) -> dict[str,
     if get_product(product_id) is None:
         raise HTTPException(status_code=404, detail="Product not found")
 
-    return queue_review(
+    return review_response(
         ReviewIn(
             product_id=product_id,
             user_id="web-client",
@@ -99,7 +96,7 @@ def create_product_review(product_id: str, review: ProductReviewIn) -> dict[str,
 
 @app.post("/reviews", status_code=201)
 def create_review(review: ReviewIn) -> dict[str, object]:
-    return queue_review(review)
+    return review_response(review)
 
 
 app.include_router(analytics_router)

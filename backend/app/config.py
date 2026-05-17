@@ -25,7 +25,7 @@ def default_frontend_origins() -> list[str]:
 
 @dataclass(frozen=True)
 class Settings:
-    kafka_bootstrap_servers: str = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
+    kafka_bootstrap_servers: str = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "127.0.0.1:9092")
     kafka_topic: str = os.getenv("KAFKA_TOPIC", "reviews")
     frontend_origins: list[str] = field(default_factory=default_frontend_origins)
 

@@ -1,24 +1,18 @@
-import os
-
-from dotenv import load_dotenv
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import avg, col, count, round
 
 from spark.review_schema import parse_review_events, select_kafka_review_events
 from spark.sentiment import add_sentiment
-
-load_dotenv()
-
-KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "reviews")
+from spark.settings import settings
 
 
 def read_reviews_from_kafka(spark: SparkSession):
     raw_reviews = (
         spark.readStream.format("kafka")
-        .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS)
-        .option("subscribe", KAFKA_TOPIC)
+        .option("kafka.bootstrap.servers", settings.kafka_bootstrap_servers)
+        .option("subscribe", settings.kafka_topic)
         .option("startingOffsets", "latest")
+        .option("failOnDataLoss", settings.kafka_fail_on_data_loss)
         .load()
     )
 
@@ -28,7 +22,7 @@ def read_reviews_from_kafka(spark: SparkSession):
 def main() -> None:
     spark = (
         SparkSession.builder.appName("ReviewStreamAnalytics")
-        .config("spark.sql.shuffle.partitions", "2")
+        .config("spark.sql.shuffle.partitions", str(settings.shuffle_partitions))
         .getOrCreate()
     )
 
@@ -64,7 +58,7 @@ def main() -> None:
         .start()
     )
 
-    print(f"Spark analytics is listening to Kafka topic: {KAFKA_TOPIC}")
+    print(f"Spark analytics is listening to Kafka topic: {settings.kafka_topic}")
     print("Submit reviews with: make test-review")
 
     spark.streams.awaitAnyTermination()

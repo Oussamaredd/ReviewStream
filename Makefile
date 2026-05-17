@@ -9,20 +9,22 @@ UVICORN := $(VENV)/bin/uvicorn
 AMAZON_REVIEWS_CSV ?= data/Reviews.csv
 SAMPLE_REVIEWS_CSV ?= data/sample_reviews.csv
 
-.PHONY: help setup install dev-install docker-up docker-down docker-logs kafka-topic api api-reload health test-review consume smoke format lint check doctor clean frontend-install frontend-dev frontend-build
+.PHONY: help setup install dev-install docker-up docker-down docker-logs kafka-wait kafka-topic api api-reload health kafka-health test-review consume smoke format lint check doctor clean frontend-install frontend-dev frontend-build
 
 help:
 	@echo "ReviewStream commands:"
 	@echo "  make setup         Create venv and install dependencies"
 	@echo "  make install       Install Python dependencies"
 	@echo "  make dev-install   Install development dependencies"
-	@echo "  make docker-up     Start Kafka, Zookeeper, and Kafka UI"
+	@echo "  make docker-up     Start lightweight Kafka, HDFS, and Hive services"
 	@echo "  make docker-down   Stop Docker services"
 	@echo "  make docker-logs   Show Docker logs"
+	@echo "  make kafka-wait    Wait until Kafka accepts broker API requests"
 	@echo "  make kafka-topic   Create Kafka topic: reviews"
 	@echo "  make api           Run FastAPI backend"
 	@echo "  make api-reload    Run FastAPI backend with autoreload"
 	@echo "  make health        Test API health endpoint"
+	@echo "  make kafka-health  Test API Kafka connectivity"
 	@echo "  make test-review   Send a sample review to the API"
 	@echo "  make consume       Read messages from Kafka"
 	@echo "  make smoke         Run health + review send + Kafka consume"
@@ -51,15 +53,29 @@ dev-install:
 	$(PIP) install -r requirements-dev.txt
 
 docker-up:
-	docker compose up -d
+	docker compose up -d --remove-orphans
 
 docker-down:
-	docker compose down
+	docker compose down --remove-orphans
 
 docker-logs:
 	docker compose logs -f
 
-kafka-topic:
+kafka-wait:
+	@echo "Waiting for Kafka broker..."
+	@for attempt in {1..30}; do \
+		if docker exec reviewstream-kafka kafka-broker-api-versions \
+			--bootstrap-server localhost:29092 >/dev/null 2>&1; then \
+			echo "Kafka is ready."; \
+			exit 0; \
+		fi; \
+		echo "Kafka not ready yet. Retry $$attempt/30..."; \
+		sleep 2; \
+	done; \
+	echo "Kafka is not ready. Run 'make docker-up' and inspect 'docker compose logs kafka'."; \
+	exit 1
+
+kafka-topic: kafka-wait
 	docker exec reviewstream-kafka kafka-topics \
 		--bootstrap-server localhost:29092 \
 		--create \
@@ -76,6 +92,9 @@ api-reload:
 
 health:
 	curl http://localhost:8000/health
+
+kafka-health:
+	curl http://localhost:8000/health/kafka
 
 test-review:
 	curl -X POST http://localhost:8000/reviews \
@@ -133,6 +152,14 @@ clean:
 
 SPARK_SUBMIT := $(VENV)/bin/spark-submit
 SPARK_KAFKA_PACKAGE := org.apache.spark:spark-sql-kafka-0-10_2.13:4.0.1
+SPARK_MASTER ?= local[1]
+SPARK_DRIVER_MEMORY ?= 1g
+SPARK_SHUFFLE_PARTITIONS ?= 1
+SPARK_STREAM_TRIGGER_SECONDS ?= 30
+SPARK_SUBMIT_LOW_CPU_OPTS := \
+	--master "$(SPARK_MASTER)" \
+	--driver-memory "$(SPARK_DRIVER_MEMORY)" \
+	--conf spark.sql.shuffle.partitions=$(SPARK_SHUFFLE_PARTITIONS)
 
 .PHONY: spark-stream spark-version
 
@@ -144,7 +171,9 @@ spark-stream:
 	PYTHONPATH="$(PWD)" \
 	PYSPARK_PYTHON="$(PWD)/$(PY)" \
 	PYSPARK_DRIVER_PYTHON="$(PWD)/$(PY)" \
+	SPARK_SQL_SHUFFLE_PARTITIONS="$(SPARK_SHUFFLE_PARTITIONS)" \
 	$(SPARK_SUBMIT) \
+		$(SPARK_SUBMIT_LOW_CPU_OPTS) \
 		--packages $(SPARK_KAFKA_PACKAGE) \
 		spark/streaming_reviews.py
 
@@ -155,7 +184,9 @@ spark-analytics:
 	PYTHONPATH="$(PWD)" \
 	PYSPARK_PYTHON="$(PWD)/$(PY)" \
 	PYSPARK_DRIVER_PYTHON="$(PWD)/$(PY)" \
+	SPARK_SQL_SHUFFLE_PARTITIONS="$(SPARK_SHUFFLE_PARTITIONS)" \
 	$(SPARK_SUBMIT) \
+		$(SPARK_SUBMIT_LOW_CPU_OPTS) \
 		--packages $(SPARK_KAFKA_PACKAGE) \
 		spark/streaming_analytics.py
 
@@ -179,7 +210,10 @@ spark-storage:
 	PYTHONPATH="$(PWD)" \
 	PYSPARK_PYTHON="$(PWD)/$(PY)" \
 	PYSPARK_DRIVER_PYTHON="$(PWD)/$(PY)" \
+	SPARK_SQL_SHUFFLE_PARTITIONS="$(SPARK_SHUFFLE_PARTITIONS)" \
+	SPARK_STREAM_TRIGGER_SECONDS="$(SPARK_STREAM_TRIGGER_SECONDS)" \
 	$(SPARK_SUBMIT) \
+		$(SPARK_SUBMIT_LOW_CPU_OPTS) \
 		--packages $(SPARK_KAFKA_PACKAGE) \
 		spark/streaming_to_hdfs.py
 
@@ -189,7 +223,10 @@ batch-amazon:
 	PYSPARK_PYTHON="$(PWD)/$(PY)" \
 	PYSPARK_DRIVER_PYTHON="$(PWD)/$(PY)" \
 	AMAZON_REVIEWS_CSV="$(AMAZON_REVIEWS_CSV)" \
-	$(SPARK_SUBMIT) spark/batch_ingest_amazon_reviews.py
+	SPARK_SQL_SHUFFLE_PARTITIONS="$(SPARK_SHUFFLE_PARTITIONS)" \
+	$(SPARK_SUBMIT) \
+		$(SPARK_SUBMIT_LOW_CPU_OPTS) \
+		spark/batch_ingest_amazon_reviews.py
 
 seed-sample:
 	$(MAKE) batch-amazon AMAZON_REVIEWS_CSV="$(SAMPLE_REVIEWS_CSV)"
@@ -211,13 +248,16 @@ spark-read-silver:
 	PYTHONPATH="$(PWD)" \
 	PYSPARK_PYTHON="$(PWD)/$(PY)" \
 	PYSPARK_DRIVER_PYTHON="$(PWD)/$(PY)" \
-	$(SPARK_SUBMIT) spark/read_silver_reviews.py
+	SPARK_SQL_SHUFFLE_PARTITIONS="$(SPARK_SHUFFLE_PARTITIONS)" \
+	$(SPARK_SUBMIT) \
+		$(SPARK_SUBMIT_LOW_CPU_OPTS) \
+		spark/read_silver_reviews.py
 
 .PHONY: hive-wait hive-init hive-shell hive-query
 
 hive-wait:
 	@echo "Waiting for HiveServer2..."
-	@until docker exec reviewstream-hive-server beeline -u 'jdbc:hive2://localhost:10000/reviewstream;auth=noSasl' -n root -e "SELECT 1;" >/dev/null 2>&1; do \
+	@until docker exec reviewstream-hive-server beeline -u 'jdbc:hive2://localhost:10000/default;auth=noSasl' -n root -e "SELECT 1;" >/dev/null 2>&1; do \
 		echo "Hive not ready yet..."; \
 		sleep 5; \
 	done
@@ -225,7 +265,7 @@ hive-wait:
 
 hive-init:
 	docker cp hive/init.sql reviewstream-hive-server:/tmp/reviewstream_hive_init.sql
-	docker exec reviewstream-hive-server beeline -u 'jdbc:hive2://localhost:10000/reviewstream;auth=noSasl' -n root -f /tmp/reviewstream_hive_init.sql
+	docker exec reviewstream-hive-server beeline -u 'jdbc:hive2://localhost:10000/default;auth=noSasl' -n root -f /tmp/reviewstream_hive_init.sql
 
 hive-shell:
 	docker exec -it reviewstream-hive-server beeline -u 'jdbc:hive2://localhost:10000/reviewstream;auth=noSasl' -n root
@@ -250,22 +290,35 @@ demo-full:
 	@echo ""
 	@echo "ReviewStream demo order:"
 	@echo "  1. make docker-up"
-	@echo "  2. make kafka-topic"
-	@echo "  3. make hdfs-wait"
-	@echo "  4. make hdfs-init"
-	@echo "  5. make hive-metastore-init"
-	@echo "  6. make hive-wait"
-	@echo "  7. make hive-init"
-	@echo "  8. make seed-sample    # quick demo"
+	@echo "  2. make kafka-wait"
+	@echo "  3. make kafka-topic"
+	@echo "  4. make hdfs-wait"
+	@echo "  5. make hdfs-init"
+	@echo "  6. make hive-metastore-init"
+	@echo "  7. make hive-wait"
+	@echo "  8. make hive-init"
+	@echo "  9. make seed-sample    # quick demo"
 	@echo "     or make batch-amazon # full historical demo with data/Reviews.csv"
-	@echo "  9. make api"
-	@echo " 10. make frontend-dev"
-	@echo " 11. optional: make spark-storage for live product reviews"
+	@echo " 10. make api"
+	@echo " 11. make frontend-dev"
+	@echo " 12. optional: make spark-storage for live product reviews"
 	@echo ""
 	@echo "This target only prints the order. Start long-running services in separate terminals."
 
 dashboard-ready-check:
 	@set +e; \
+	echo "Checking Kafka readiness..."; \
+	if docker exec reviewstream-kafka kafka-broker-api-versions --bootstrap-server localhost:29092 >/dev/null 2>&1; then \
+		echo "OK: Kafka broker is ready"; \
+	else \
+		echo "MISSING: Kafka is not ready. Run: make docker-up && make kafka-wait"; \
+	fi; \
+	if docker exec reviewstream-kafka kafka-topics --bootstrap-server localhost:29092 --list 2>/dev/null | grep -qx reviews; then \
+		echo "OK: Kafka topic reviews exists"; \
+	else \
+		echo "MISSING: Kafka topic reviews. Run: make kafka-topic"; \
+	fi; \
+	echo ""; \
 	echo "Checking HDFS readiness..."; \
 	if docker exec reviewstream-namenode hdfs dfsadmin -report >/dev/null 2>&1; then \
 		echo "OK: HDFS NameNode is ready"; \
@@ -286,7 +339,7 @@ dashboard-ready-check:
 	done; \
 	echo ""; \
 	echo "Checking Hive readiness..."; \
-	if docker exec reviewstream-hive-server beeline -u 'jdbc:hive2://localhost:10000/reviewstream;auth=noSasl' -n root -e "SELECT 1;" >/dev/null 2>&1; then \
+	if docker exec reviewstream-hive-server beeline -u 'jdbc:hive2://localhost:10000/default;auth=noSasl' -n root -e "SELECT 1;" >/dev/null 2>&1; then \
 		echo "OK: HiveServer2 is ready"; \
 	else \
 		echo "MISSING: Hive is not ready. Run: make hive-metastore-init && make hive-wait"; \
@@ -302,21 +355,22 @@ dashboard-ready-check:
 	echo "Checking API if it is running..."; \
 	if curl --fail --silent --max-time 2 http://localhost:8000/health >/dev/null 2>&1; then \
 		echo "OK: API /health is reachable"; \
+		if curl --fail --silent --max-time 3 http://localhost:8000/health/kafka >/dev/null 2>&1; then \
+			echo "OK: API Kafka probe responded"; \
+		else \
+			echo "WARN: API Kafka probe did not respond. Run: make kafka-health"; \
+		fi; \
 		if curl --fail --silent --max-time 3 http://localhost:8000/analytics/dashboard >/dev/null 2>&1; then \
 			echo "OK: API /analytics/dashboard returns a user-visible dashboard"; \
 		else \
 			echo "WARN: API is running but dashboard fallback did not respond"; \
-		fi; \
-		if curl --fail --silent --max-time 30 'http://localhost:8000/analytics/dashboard?prefer_cache=false&allow_sample=false' >/dev/null 2>&1; then \
-			echo "OK: strict Hive dashboard query returned fresh analytics"; \
-		else \
-			echo "WARN: strict Hive dashboard query is not fresh yet; UI will show cached/sample analytics"; \
 		fi; \
 	else \
 		echo "SKIP: API is not running. Start it with: make api"; \
 	fi; \
 	echo ""; \
 	echo "Next steps:"; \
+	echo "  - Kafka unavailable: make docker-up && make kafka-wait && make kafka-topic"; \
 	echo "  - Missing HDFS paths: make hdfs-wait && make hdfs-init"; \
 	echo "  - Missing Hive table: make hive-wait && make hive-init"; \
 	echo "  - Empty dashboard: make seed-sample or make batch-amazon"; \

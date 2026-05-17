@@ -3,7 +3,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app import main
+from backend.app import review_service
 from backend.app.main import app
 
 client = TestClient(app)
@@ -18,7 +18,7 @@ def test_product_review_submission_sends_event_to_kafka(
         sent_events.append(event)
         return {"topic": "reviews", "partition": 0, "offset": 12}
 
-    monkeypatch.setattr(main, "send_review", fake_send_review)
+    monkeypatch.setattr(review_service, "send_review", fake_send_review)
 
     response = client.post(
         "/products/P001/reviews",
@@ -45,7 +45,7 @@ def test_product_review_submission_returns_404_for_unknown_product(
     def fail_if_called(event: dict[str, Any]) -> dict[str, Any]:
         raise AssertionError(f"Kafka should not be called for unknown products: {event}")
 
-    monkeypatch.setattr(main, "send_review", fail_if_called)
+    monkeypatch.setattr(review_service, "send_review", fail_if_called)
 
     response = client.post(
         "/products/UNKNOWN/reviews",
@@ -73,7 +73,7 @@ def test_product_review_submission_rejects_invalid_body(
     def fail_if_called(event: dict[str, Any]) -> dict[str, Any]:
         raise AssertionError(f"Kafka should not be called for invalid bodies: {event}")
 
-    monkeypatch.setattr(main, "send_review", fail_if_called)
+    monkeypatch.setattr(review_service, "send_review", fail_if_called)
 
     response = client.post("/products/P001/reviews", json=payload)
 

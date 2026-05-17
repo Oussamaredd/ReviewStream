@@ -12,7 +12,8 @@ import StatusBanner from "../components/StatusBanner.vue";
 import { getDashboard } from "../services/api";
 
 const pollIntervalMs = 10000;
-const dashboardStorageKey = "reviewstream.dashboard.v1";
+const dashboardStorageKey = "reviewstream.dashboard.v2";
+const legacyDashboardStorageKey = "reviewstream.dashboard.v1";
 
 const dashboard = ref(null);
 const isLoading = ref(false);
@@ -34,12 +35,16 @@ const summary = computed(() => {
 
 const sentiment = computed(() => dashboard.value?.sentiment || []);
 const scoreDistribution = computed(() => dashboard.value?.score_distribution || []);
-const topProducts = computed(() => dashboard.value?.top_products || []);
-const worstProducts = computed(() => dashboard.value?.worst_products || []);
-const negativeProducts = computed(() => dashboard.value?.negative_products || []);
+const topProducts = computed(() => filterTestProducts(dashboard.value?.top_products || []));
+const worstProducts = computed(() => filterTestProducts(dashboard.value?.worst_products || []));
+const negativeProducts = computed(() =>
+  filterTestProducts(dashboard.value?.negative_products || [])
+);
 const sources = computed(() => dashboard.value?.sources || []);
-const recentReviews = computed(() => dashboard.value?.recent_reviews || []);
-const opinions = computed(() => dashboard.value?.opinions || recentReviews.value || []);
+const recentReviews = computed(() => filterOpinionRows(dashboard.value?.recent_reviews || []));
+const opinions = computed(() => {
+  return filterOpinionRows(dashboard.value?.opinions || recentReviews.value || []);
+});
 const positiveKeywordCount = computed(() => {
   return dashboard.value?.positive_keywords?.matching_reviews ?? 0;
 });
@@ -67,32 +72,34 @@ const metricCards = computed(() => [
   {
     label: "Total reviews",
     value: formatInteger(summary.value.total_reviews),
-    detail: "Rows in Hive silver data",
+    detail: "Hive silver rows",
+    featured: true,
   },
   {
     label: "Average score",
     value: formatDecimal(summary.value.average_score),
-    detail: "Across all scored reviews",
+    detail: "All scored reviews",
+    featured: true,
   },
   {
     label: "First review",
     value: formatDate(summary.value.first_review_at),
-    detail: "Oldest available event",
+    detail: "Oldest event",
   },
   {
     label: "Latest review",
     value: formatDate(summary.value.last_review_at),
-    detail: "Newest available event",
+    detail: "Newest event",
   },
   {
-    label: "Positive keyword reviews",
+    label: "Positive keywords",
     value: formatInteger(positiveKeywordCount.value),
-    detail: "Opinion text keyword scan",
+    detail: "Opinion text hits",
   },
   {
-    label: "Negative keyword reviews",
+    label: "Negative keywords",
     value: formatInteger(negativeKeywordCount.value),
-    detail: "Opinion text keyword scan",
+    detail: "Opinion text hits",
   },
 ]);
 
@@ -124,6 +131,24 @@ function formatDate(value) {
   });
 }
 
+function isTestProduct(row) {
+  return String(row?.product_id || "")
+    .toUpperCase()
+    .startsWith("E2E");
+}
+
+function hasOpinionText(row) {
+  return Boolean(String(row?.text || "").trim());
+}
+
+function filterTestProducts(rows) {
+  return rows.filter((row) => !isTestProduct(row));
+}
+
+function filterOpinionRows(rows) {
+  return rows.filter((row) => !isTestProduct(row) && hasOpinionText(row));
+}
+
 function dashboardWarning(data) {
   if (data.status === "sample") {
     return "Showing sample analytics while Hive warms up. Seed data or fix Hive to replace this with live analytics.";
@@ -138,6 +163,7 @@ function dashboardWarning(data) {
 
 function restoreDashboardFromStorage() {
   try {
+    window.localStorage.removeItem(legacyDashboardStorageKey);
     const cachedDashboard = JSON.parse(window.localStorage.getItem(dashboardStorageKey));
     if (!cachedDashboard?.summary) {
       return;
@@ -216,20 +242,27 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="page-shell analytics-page">
-    <section class="page-heading compact">
+    <section class="page-heading compact analytics-heading">
       <div>
         <p class="eyebrow">Analytics</p>
-        <h1>Review statistics</h1>
-        <p>
-          Polling every {{ pollIntervalMs / 1000 }} seconds.
-          <template v-if="lastUpdated">Last refreshed {{ lastUpdated }}.</template>
-        </p>
+        <h1>Review operations</h1>
+        <p>Product performance, sentiment, and opinion signals from the analytics pipeline.</p>
       </div>
-      <span :class="['dashboard-status', dashboard?.status || 'pending']">{{ statusLabel }}</span>
+      <div class="analytics-command-bar">
+        <span :class="['dashboard-status', dashboard?.status || 'pending']">
+          {{ statusLabel }}
+        </span>
+        <div class="analytics-refresh-line">
+          <span v-if="lastUpdated">Refreshed {{ lastUpdated }}</span>
+          <span>Polling {{ pollIntervalMs / 1000 }}s</span>
+        </div>
+      </div>
     </section>
 
-    <StatusBanner v-if="warningMessage" type="warning" :message="warningMessage" />
-    <StatusBanner v-if="errorMessage" type="error" :message="errorMessage" />
+    <div v-if="warningMessage || errorMessage" class="analytics-alerts">
+      <StatusBanner v-if="warningMessage" type="warning" :message="warningMessage" />
+      <StatusBanner v-if="errorMessage" type="error" :message="errorMessage" />
+    </div>
 
     <LoadingState v-if="isLoading && !dashboard" label="Loading analytics" />
 
@@ -238,68 +271,98 @@ onBeforeUnmount(() => {
         <MetricCard
           v-for="metric in metricCards"
           :key="metric.label"
+          :class="{ featured: metric.featured }"
           :label="metric.label"
           :value="metric.value"
           :detail="metric.detail"
         />
       </section>
 
-      <section class="analytics-grid two-column">
-        <BarChart
-          title="Sentiment distribution"
-          kicker="Opinion tone"
-          :rows="sentiment"
-          label-key="sentiment"
-          empty-message="No sentiment rows yet"
-        />
-        <ScoreDistribution :rows="scoreDistribution" />
+      <section class="analytics-section">
+        <div class="section-heading">
+          <div>
+            <p class="panel-kicker">Customer voice</p>
+            <h2>Opinion feed</h2>
+          </div>
+          <span>Read the latest review text before interpreting aggregate ratios</span>
+        </div>
+
+        <div class="analytics-grid text-insights">
+          <RecentReviews
+            title="Opinion text"
+            kicker="Review content"
+            :rows="opinions"
+            empty-message="No opinions yet"
+          />
+          <RecentReviews
+            title="Recent reviews"
+            kicker="Latest opinions"
+            :rows="recentReviews"
+            empty-message="No recent review text yet"
+          />
+        </div>
       </section>
 
-      <section class="analytics-grid three-column">
-        <ProductTable
-          title="Top products"
-          kicker="Best rated"
-          :rows="topProducts"
-          empty-message="No top products yet"
-        />
-        <ProductTable
-          title="Worst products"
-          kicker="Lowest rated"
-          :rows="worstProducts"
-          empty-message="No worst products yet"
-        />
-        <ProductTable
-          title="Negative products"
-          kicker="Risk signals"
-          :rows="negativeProducts"
-          count-label="Negative"
-          count-key="negative_review_count"
-          empty-message="No negative product rows yet"
-        />
+      <section class="analytics-section">
+        <div class="section-heading">
+          <div>
+            <p class="panel-kicker">Distribution</p>
+            <h2>Ratio views</h2>
+          </div>
+          <span>Use these after scanning the underlying opinions</span>
+        </div>
+
+        <div class="analytics-grid analytics-overview-grid">
+          <BarChart
+            title="Sentiment distribution"
+            kicker="Opinion tone"
+            :rows="sentiment"
+            label-key="sentiment"
+            empty-message="No sentiment rows yet"
+          />
+          <ScoreDistribution :rows="scoreDistribution" />
+          <BarChart
+            title="Source counts"
+            kicker="Data mix"
+            :rows="sources"
+            label-key="source"
+            empty-message="No source rows yet"
+          />
+        </div>
       </section>
 
-      <section class="analytics-grid two-column">
-        <BarChart
-          title="Source counts"
-          kicker="Data mix"
-          :rows="sources"
-          label-key="source"
-          empty-message="No source rows yet"
-        />
-        <RecentReviews
-          title="Recent reviews"
-          kicker="Latest opinions"
-          :rows="recentReviews"
-          empty-message="No recent review text yet"
-        />
-      </section>
+      <section class="analytics-section">
+        <div class="section-heading">
+          <div>
+            <p class="panel-kicker">Product performance</p>
+            <h2>Ranked product signals</h2>
+          </div>
+          <span>Review volume, average score, and negative-review concentration</span>
+        </div>
 
-      <RecentReviews
-        title="Opinion text"
-        kicker="Review content"
-        :rows="opinions"
-        empty-message="No opinions yet"
-      />
+        <div class="analytics-grid product-insights">
+          <ProductTable
+            title="Top products"
+            kicker="Best rated"
+            :rows="topProducts"
+            empty-message="No top products yet"
+          />
+          <ProductTable
+            title="Worst products"
+            kicker="Lowest rated"
+            :rows="worstProducts"
+            empty-message="No worst products yet"
+          />
+          <ProductTable
+            title="Negative products"
+            kicker="Risk signals"
+            :rows="negativeProducts"
+            count-label="Negative"
+            count-key="negative_review_count"
+            empty-message="No negative product rows yet"
+          />
+        </div>
+      </section>
     </template>
 
     <EmptyState
