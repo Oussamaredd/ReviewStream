@@ -13,6 +13,7 @@ from spark.paths import (
 )
 from spark.review_schema import AMAZON_REQUIRED_COLUMNS, SILVER_COLUMNS
 from spark.sentiment import enrich_reviews
+from spark.settings import settings
 
 load_dotenv()
 
@@ -20,10 +21,13 @@ load_dotenv()
 def create_spark_session() -> SparkSession:
     return (
         SparkSession.builder.appName("ReviewStreamAmazonReviewsBatchIngest")
-        .config("spark.sql.shuffle.partitions", "4")
+        .config("spark.sql.shuffle.partitions", str(settings.shuffle_partitions))
         .config("spark.hadoop.fs.defaultFS", hdfs_default_fs())
         .config("spark.hadoop.dfs.replication", "1")
-        .config("spark.hadoop.dfs.client.use.datanode.hostname", "true")
+        .config(
+            "spark.hadoop.dfs.client.use.datanode.hostname",
+            settings.hdfs_client_use_datanode_hostname,
+        )
         .getOrCreate()
     )
 

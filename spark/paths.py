@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DEFAULT_HDFS_BASE_PATH = "hdfs://namenode:9000/reviewstream"
+DEFAULT_HDFS_BASE_PATH = "hdfs://localhost:9000/reviewstream"
 DEFAULT_AMAZON_REVIEWS_CSV = "data/Reviews.csv"
 
 

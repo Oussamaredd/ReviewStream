@@ -2,7 +2,8 @@ from dotenv import load_dotenv
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col
 
-from spark.paths import silver_reviews_enriched_path
+from spark.paths import hdfs_default_fs, silver_reviews_enriched_path
+from spark.settings import settings
 
 load_dotenv()
 
@@ -10,8 +11,12 @@ load_dotenv()
 def main() -> None:
     spark = (
         SparkSession.builder.appName("ReviewStreamReadSilver")
-        .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:9000")
-        .config("spark.hadoop.dfs.client.use.datanode.hostname", "true")
+        .config("spark.sql.shuffle.partitions", str(settings.shuffle_partitions))
+        .config("spark.hadoop.fs.defaultFS", hdfs_default_fs())
+        .config(
+            "spark.hadoop.dfs.client.use.datanode.hostname",
+            settings.hdfs_client_use_datanode_hostname,
+        )
         .getOrCreate()
     )
 

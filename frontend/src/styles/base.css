@@ -351,6 +351,10 @@ textarea:focus {
   color: #164e63;
 }
 
+.dashboard-status.pending {
+  color: #66788a;
+}
+
 .tag-row {
   display: flex;
   flex-wrap: wrap;
@@ -394,6 +398,25 @@ textarea:focus {
   display: grid;
   gap: 14px;
   padding: 16px;
+}
+
+.review-modal-backdrop {
+  position: fixed;
+  z-index: 50;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  overflow: auto;
+  background: rgba(15, 23, 42, 0.76);
+  padding: 24px;
+}
+
+.review-dialog-panel {
+  position: relative;
+  top: auto;
+  width: min(520px, 100%);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
 }
 
 .panel-header {
@@ -448,26 +471,46 @@ textarea:focus {
   gap: 12px;
 }
 
-.score-control {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+.star-rating {
+  display: flex;
+  align-items: center;
   gap: 8px;
 }
 
-.score-button {
-  min-height: 40px;
-  border: 1px solid #cbd5e1;
-  border-radius: 6px;
-  background: #f8fafc;
-  color: #1f2933;
+.star-button {
+  width: 38px;
+  height: 38px;
+  border: 0;
+  border-radius: 50%;
+  background: #eef2f7;
+  color: #94a3b8;
   cursor: pointer;
-  font-weight: 850;
+  font-size: 1.35rem;
+  line-height: 1;
+  transition:
+    background 0.16s ease,
+    color 0.16s ease,
+    transform 0.16s ease;
 }
 
-.score-button.active {
-  border-color: #0e7490;
-  background: #e8f7fb;
-  color: #155e75;
+.star-button:hover,
+.star-button:focus-visible {
+  background: #fef3c7;
+  color: #d97706;
+  outline: 2px solid #f59e0b;
+  outline-offset: 2px;
+  transform: translateY(-1px);
+}
+
+.star-button.active {
+  background: #fef3c7;
+  color: #f59e0b;
+}
+
+.star-rating strong {
+  min-width: 64px;
+  color: #314155;
+  font-size: 0.9rem;
 }
 
 .metrics-grid {
@@ -482,6 +525,11 @@ textarea:focus {
   gap: 8px;
   min-height: 122px;
   padding: 16px;
+}
+
+.metric-card.featured {
+  border-color: #b8e4c8;
+  background: #fbfefd;
 }
 
 .metric-card strong {
@@ -506,6 +554,79 @@ textarea:focus {
 
 .analytics-grid.three-column {
   grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.analytics-heading {
+  padding-bottom: 18px;
+  border-bottom: 1px solid #dde4ed;
+}
+
+.analytics-heading h1 {
+  font-size: clamp(1.85rem, 3vw, 2.55rem);
+  line-height: 1.08;
+}
+
+.analytics-command-bar {
+  display: grid;
+  justify-items: end;
+  gap: 8px;
+}
+
+.analytics-refresh-line {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+  color: #66788a;
+  font-size: 0.82rem;
+}
+
+.analytics-alerts {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.analytics-section {
+  margin-top: 18px;
+}
+
+.section-heading {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 18px;
+  margin-bottom: 10px;
+  padding-top: 18px;
+  border-top: 1px solid #e5ebf2;
+}
+
+.section-heading h2 {
+  margin-top: 4px;
+  font-size: 1.18rem;
+}
+
+.section-heading > span {
+  max-width: 420px;
+  color: #66788a;
+  font-size: 0.86rem;
+  line-height: 1.4;
+  text-align: right;
+}
+
+.analytics-overview-grid,
+.product-insights {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.text-insights {
+  grid-template-columns: minmax(0, 1.25fr) minmax(320px, 0.75fr);
+  align-items: start;
+}
+
+.analytics-page .panel,
+.analytics-page .metric-card {
+  box-shadow: 0 4px 14px rgba(15, 23, 42, 0.035);
 }
 
 .panel {
@@ -584,6 +705,10 @@ textarea:focus {
   border-collapse: collapse;
 }
 
+thead {
+  background: #f8fafc;
+}
+
 th,
 td {
   border-bottom: 1px solid #edf1f7;
@@ -597,6 +722,12 @@ td:nth-child(3),
 th:nth-child(2),
 th:nth-child(3) {
   text-align: right;
+}
+
+th {
+  color: #66788a;
+  font-size: 0.78rem;
+  text-transform: uppercase;
 }
 
 td strong,
@@ -625,6 +756,7 @@ td strong,
   gap: 9px;
   border: 1px solid #edf1f7;
   border-radius: 8px;
+  background: #fbfcfe;
   padding: 12px;
 }
 
@@ -649,6 +781,7 @@ td strong,
 
 .review-item p {
   color: #334155;
+  font-size: 0.92rem;
   line-height: 1.5;
 }
 
@@ -716,7 +849,10 @@ td strong,
     grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
-  .analytics-grid.three-column {
+  .analytics-grid.three-column,
+  .analytics-overview-grid,
+  .product-insights,
+  .text-insights {
     grid-template-columns: 1fr;
   }
 }
@@ -732,6 +868,24 @@ td strong,
 
   .segmented-control {
     justify-content: flex-start;
+  }
+
+  .analytics-command-bar {
+    justify-items: start;
+  }
+
+  .analytics-refresh-line {
+    justify-content: flex-start;
+  }
+
+  .section-heading {
+    display: grid;
+    align-items: start;
+  }
+
+  .section-heading > span {
+    max-width: none;
+    text-align: left;
   }
 
   .review-panel {

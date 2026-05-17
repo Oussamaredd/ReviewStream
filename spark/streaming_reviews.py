@@ -1,20 +1,13 @@
-import os
-
-from dotenv import load_dotenv
 from pyspark.sql import SparkSession
 
 from spark.review_schema import parse_review_events, select_kafka_review_events
-
-load_dotenv()
-
-KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "reviews")
+from spark.settings import settings
 
 
 def main() -> None:
     spark = (
         SparkSession.builder.appName("ReviewStreamKafkaConsumer")
-        .config("spark.sql.shuffle.partitions", "2")
+        .config("spark.sql.shuffle.partitions", str(settings.shuffle_partitions))
         .getOrCreate()
     )
 
@@ -22,9 +15,10 @@ def main() -> None:
 
     raw_reviews = (
         spark.readStream.format("kafka")
-        .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS)
-        .option("subscribe", KAFKA_TOPIC)
+        .option("kafka.bootstrap.servers", settings.kafka_bootstrap_servers)
+        .option("subscribe", settings.kafka_topic)
         .option("startingOffsets", "latest")
+        .option("failOnDataLoss", settings.kafka_fail_on_data_loss)
         .load()
     )
 
@@ -40,7 +34,7 @@ def main() -> None:
         .start()
     )
 
-    print(f"Spark is listening to Kafka topic: {KAFKA_TOPIC}")
+    print(f"Spark is listening to Kafka topic: {settings.kafka_topic}")
     print("Submit a review with: make test-review")
 
     query.awaitTermination()

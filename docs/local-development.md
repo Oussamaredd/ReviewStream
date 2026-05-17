@@ -16,6 +16,7 @@ cd frontend && npm install && cd ..
 
 ```bash
 make docker-up
+make kafka-wait
 make kafka-topic
 make hdfs-wait
 make hdfs-init
@@ -23,6 +24,16 @@ make hive-metastore-init
 make hive-wait
 make hive-init
 ```
+
+The Docker stack is intentionally lightweight: Kafka runs as one KRaft container, HDFS uses one
+NameNode and one DataNode, and Hive uses HiveServer2, Hive Metastore, and `hive-metastore-db`.
+Spark is started only when you run a Spark Make target.
+
+Host-run Spark writes to HDFS through `hdfs://localhost:9000/reviewstream`. The DataNode advertises
+`host.docker.internal` so host Spark can reach block transfers through the published Docker port.
+Use the Docker service name `namenode` only for processes running inside the Compose network.
+Spark Kafka streams use `SPARK_KAFKA_FAIL_ON_DATA_LOSS=false` by default so recreating the local
+Kafka container does not break existing HDFS checkpoints during demos.
 
 ## Historical Data
 
@@ -73,10 +84,25 @@ make spark-storage
 make frontend-dev
 ```
 
+`make spark-storage` uses low-CPU Spark defaults. To trade more CPU for faster local processing,
+override them explicitly:
+
+```bash
+make spark-storage SPARK_MASTER='local[2]' SPARK_SHUFFLE_PARTITIONS=2
+```
+
 Submit a review from `http://localhost:5173/products` or send a full event:
 
 ```bash
 make test-review
+```
+
+If review submission returns `503`, run:
+
+```bash
+make kafka-wait
+make kafka-topic
+make kafka-health
 ```
 
 The Products page submits only `score` and opinion text to
@@ -96,7 +122,9 @@ Dashboard states:
 - Fresh: Hive query succeeded.
 - Cached: Hive is unavailable, but the API serves the last successful dashboard snapshot.
 - Sample: default dashboard requests show committed sample analytics if Hive is not ready and no
-  cache exists.
+  cache exists. Automatic background Hive refresh is disabled by default to keep the local stack
+  light; set `DASHBOARD_BACKGROUND_REFRESH_ENABLED=true` if you want the API to refresh the
+  process cache while the frontend is open.
 - Strict cold start: direct strict API calls can still return `503` when Hive is unavailable and no
   cached dashboard exists.
 - Empty: Hive reachable but the table has zero rows.

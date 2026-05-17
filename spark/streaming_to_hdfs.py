@@ -1,25 +1,26 @@
-import os
-
-from dotenv import load_dotenv
 from pyspark.sql import SparkSession
 
-from spark.paths import bronze_reviews_raw_path, checkpoint_path, silver_reviews_enriched_path
+from spark.paths import (
+    bronze_reviews_raw_path,
+    checkpoint_path,
+    hdfs_default_fs,
+    silver_reviews_enriched_path,
+)
 from spark.review_schema import SILVER_COLUMNS, parse_review_events, select_kafka_review_events
 from spark.sentiment import enrich_reviews
-
-load_dotenv()
-
-KAFKA_BOOTSTRAP_SERVERS = os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092")
-KAFKA_TOPIC = os.getenv("KAFKA_TOPIC", "reviews")
+from spark.settings import settings
 
 
 def main() -> None:
     spark = (
         SparkSession.builder.appName("ReviewStreamHDFSWriter")
-        .config("spark.sql.shuffle.partitions", "2")
-        .config("spark.hadoop.fs.defaultFS", "hdfs://namenode:9000")
+        .config("spark.sql.shuffle.partitions", str(settings.shuffle_partitions))
+        .config("spark.hadoop.fs.defaultFS", hdfs_default_fs())
         .config("spark.hadoop.dfs.replication", "1")
-        .config("spark.hadoop.dfs.client.use.datanode.hostname", "true")
+        .config(
+            "spark.hadoop.dfs.client.use.datanode.hostname",
+            settings.hdfs_client_use_datanode_hostname,
+        )
         .getOrCreate()
     )
 
@@ -27,9 +28,10 @@ def main() -> None:
 
     raw_reviews = (
         spark.readStream.format("kafka")
-        .option("kafka.bootstrap.servers", KAFKA_BOOTSTRAP_SERVERS)
-        .option("subscribe", KAFKA_TOPIC)
+        .option("kafka.bootstrap.servers", settings.kafka_bootstrap_servers)
+        .option("subscribe", settings.kafka_topic)
         .option("startingOffsets", "latest")
+        .option("failOnDataLoss", settings.kafka_fail_on_data_loss)
         .load()
     )
 
@@ -43,7 +45,7 @@ def main() -> None:
         .outputMode("append")
         .option("path", bronze_reviews_raw_path())
         .option("checkpointLocation", checkpoint_path("bronze_reviews_raw"))
-        .trigger(processingTime="10 seconds")
+        .trigger(processingTime=f"{settings.stream_trigger_seconds} seconds")
         .start()
     )
 
@@ -53,7 +55,7 @@ def main() -> None:
         .outputMode("append")
         .option("path", silver_reviews_enriched_path())
         .option("checkpointLocation", checkpoint_path("silver_reviews_enriched"))
-        .trigger(processingTime="10 seconds")
+        .trigger(processingTime=f"{settings.stream_trigger_seconds} seconds")
         .start()
     )
 

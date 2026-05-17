@@ -1,5 +1,5 @@
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
 
 import EmptyState from "../components/EmptyState.vue";
 import LoadingState from "../components/LoadingState.vue";
@@ -18,6 +18,7 @@ const successMessage = ref("");
 const searchTerm = ref("");
 const selectedCategory = ref("All");
 const formResetKey = ref(0);
+const reviewDialog = ref(null);
 
 const categories = computed(() => {
   const values = new Set(products.value.map((product) => product.category));
@@ -49,7 +50,6 @@ async function loadProducts() {
 
   try {
     products.value = await getProducts();
-    selectedProduct.value = products.value[0] || null;
   } catch (error) {
     loadError.value = error instanceof Error ? error.message : "Products could not be loaded.";
   } finally {
@@ -61,6 +61,22 @@ function chooseProduct(product) {
   selectedProduct.value = product;
   submitError.value = "";
   successMessage.value = "";
+  nextTick(() => reviewDialog.value?.focus());
+}
+
+function closeReviewPanel() {
+  if (isSubmitting.value) {
+    return;
+  }
+
+  selectedProduct.value = null;
+  submitError.value = "";
+}
+
+function handleKeydown(event) {
+  if (event.key === "Escape" && selectedProduct.value) {
+    closeReviewPanel();
+  }
 }
 
 async function submitReview(payload) {
@@ -84,7 +100,14 @@ async function submitReview(payload) {
   }
 }
 
-onMounted(loadProducts);
+onMounted(() => {
+  loadProducts();
+  window.addEventListener("keydown", handleKeydown);
+});
+
+onUnmounted(() => {
+  window.removeEventListener("keydown", handleKeydown);
+});
 </script>
 
 <template>
@@ -127,49 +150,59 @@ onMounted(loadProducts);
         </div>
       </section>
 
-      <div class="products-workspace">
-        <section class="product-grid" aria-label="Products">
-          <ProductCard
-            v-for="product in filteredProducts"
-            :key="product.product_id"
-            :product="product"
-            :selected="selectedProduct?.product_id === product.product_id"
-            @review="chooseProduct"
-          />
+      <section class="product-grid" aria-label="Products">
+        <ProductCard
+          v-for="product in filteredProducts"
+          :key="product.product_id"
+          :product="product"
+          :selected="selectedProduct?.product_id === product.product_id"
+          @review="chooseProduct"
+        />
 
-          <EmptyState
-            v-if="!filteredProducts.length"
-            title="No products match"
-            message="Adjust the search or category filter."
-          />
-        </section>
+        <EmptyState
+          v-if="!filteredProducts.length"
+          title="No products match"
+          message="Adjust the search or category filter."
+        />
+      </section>
 
-        <aside class="review-panel">
-          <div class="panel-header">
-            <div>
-              <p class="panel-kicker">Checkout counter</p>
-              <h2>Leave a review</h2>
+      <Teleport to="body">
+        <div
+          v-if="selectedProduct"
+          class="review-modal-backdrop"
+          @click.self="closeReviewPanel"
+        >
+          <aside
+            ref="reviewDialog"
+            class="review-panel review-dialog-panel"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="review-dialog-title"
+            tabindex="-1"
+          >
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">Checkout counter</p>
+                <h2 id="review-dialog-title">Leave a review</h2>
+              </div>
+              <button type="button" class="secondary-button" @click="closeReviewPanel">
+                Close
+              </button>
             </div>
-          </div>
 
-          <ReviewForm
-            v-if="selectedProduct"
-            :key="`${selectedProduct.product_id}-${formResetKey}`"
-            :product="selectedProduct"
-            :submitting="isSubmitting"
-            @submit="submitReview"
-            @cancel="selectedProduct = null"
-          />
-          <EmptyState
-            v-else
-            title="Select a product"
-            message="Pick an item from the catalog to review it."
-          />
+            <ReviewForm
+              :key="`${selectedProduct.product_id}-${formResetKey}`"
+              :product="selectedProduct"
+              :submitting="isSubmitting"
+              @submit="submitReview"
+              @cancel="closeReviewPanel"
+            />
 
-          <StatusBanner v-if="successMessage" type="success" :message="successMessage" />
-          <StatusBanner v-if="submitError" type="error" :message="submitError" />
-        </aside>
-      </div>
+            <StatusBanner v-if="successMessage" type="success" :message="successMessage" />
+            <StatusBanner v-if="submitError" type="error" :message="submitError" />
+          </aside>
+        </div>
+      </Teleport>
     </template>
   </main>
 </template>
