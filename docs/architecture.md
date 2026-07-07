@@ -129,29 +129,43 @@ Hive service responsibilities:
 ## Serving
 
 FastAPI exposes fixed backend-controlled analytics queries. Numeric query parameters are validated
-with FastAPI `Query` constraints before being formatted into SQL. Hive/PyHive failures are logged
-internally and returned as safe `503` responses.
+with FastAPI `Query` constraints and again in the analytics application service before reaching the
+Hive repository. Hive/PyHive failures are logged internally and returned as safe `503` responses.
 
-The analytics backend is split by responsibility so the prototype is easier to explain and change:
+The backend is organized as a modular monolith with Clean Architecture-style boundaries. The stable
+ASGI entry point remains `backend.app.main:app`, but that module is only a compatibility shim. The
+real app factory and dependency wiring live in `backend/reviewstream/bootstrap.py`.
 
-- `backend/app/analytics.py` owns FastAPI route wiring.
-- `backend/app/analytics_queries.py` owns fixed Hive query execution.
-- `backend/app/analytics_dashboard.py` owns dashboard cache, sample, and freshness behavior.
-- `backend/app/analytics_payloads.py` owns response normalization and dashboard safety checks.
+Feature code is grouped by bounded context:
 
-Only `GET /analytics/dashboard` has a process-local in-memory fallback cache. Fresh successful
-dashboard responses are normalized, tagged with `status`, `stale`, and `generated_at`, and stored.
+- `backend/reviewstream/reviews` owns review submission and Kafka publishing through a
+  `ReviewPublisher` port. The Kafka publisher is an injected instance with its own producer lifecycle.
+- `backend/reviewstream/catalog` owns product lookup through a `ProductRepository` port.
+- `backend/reviewstream/analytics` owns dashboard/read-model queries, Hive SQL, cache fallback, and
+  sample-dashboard behavior.
+- `backend/reviewstream/health` owns process and Kafka health endpoints through injected probes.
+- `backend/reviewstream/platform` owns cross-cutting settings, explicit environment parsing, and
+  low-level Hive connection helpers.
+
+Inside each context, HTTP routes live under `interfaces/http`, workflows live under `application`,
+business models/events live under `domain`, and Kafka/Hive/files/cache adapters live under
+`infrastructure`. See `docs/backend-clean-architecture.md` for the detailed package map and
+microservice-readiness notes.
+
+Only `GET /analytics/dashboard` has a process-local in-memory fallback cache. The cache is
+lock-protected and returns deep copies so request handlers cannot mutate shared cached state. Fresh
+successful dashboard responses are normalized, tagged with `status`, `stale`, and `generated_at`, and
+stored.
 If Hive later fails, the endpoint returns the cached snapshot with `status = cached`, `stale = true`,
 and a warning. Strict callers can request
 `/analytics/dashboard?prefer_cache=false&allow_sample=false` to receive `503` when Hive fails
 before any successful dashboard.
 
 Default dashboard requests use `prefer_cache=true&allow_sample=true`: they return the process cache
-immediately when it exists. If no process cache exists, they return a sample dashboard computed
-from committed `data/sample_reviews.csv`. Automatic background Hive refresh is disabled by default
-so the local demo does not start expensive Hive aggregate jobs while the frontend is only asking for
-a fast dashboard. Set `DASHBOARD_BACKGROUND_REFRESH_ENABLED=true` to opt into throttled background
-refreshes.
+immediately when it exists. If no process cache exists, they try Hive and cache a fresh dashboard
+before falling back to committed `data/sample_reviews.csv` only when Hive is unavailable. Set
+`DASHBOARD_BACKGROUND_REFRESH_ENABLED=true` to opt into throttled background refreshes while serving
+cached dashboard responses.
 
 Empty Hive tables are valid. The dashboard summary defaults to zero/null values and list sections
 default to empty lists so the frontend can render cold demos without null-breaking payloads.

@@ -1,7 +1,7 @@
 from fastapi.testclient import TestClient
 
-from backend.app.catalog import PRODUCT_CATALOG
-from backend.app.main import app
+from backend.reviewstream.catalog.infrastructure.in_memory_catalog_repository import PRODUCT_CATALOG
+from backend.reviewstream.main import app
 
 client = TestClient(app)
 

@@ -98,9 +98,9 @@ pipeline or API contract.
 
 - Fresh: Hive query succeeded and the API returned a new dashboard snapshot.
 - Cached: Hive is unavailable, but the API returned the last successful dashboard snapshot.
-- Sample: first paint can use committed `data/sample_reviews.csv`. Background Hive refresh is
-  disabled by default to keep the local demo light; set `DASHBOARD_BACKGROUND_REFRESH_ENABLED=true`
-  when you want the API to warm the cache on its own.
+- Sample: first paint tries Hive and uses committed `data/sample_reviews.csv` only if Hive is not
+  ready. Set `DASHBOARD_BACKGROUND_REFRESH_ENABLED=true` when you want cached dashboard responses to
+  trigger background Hive refreshes.
 - Strict cold start: direct strict calls can still return `503` when Hive is unavailable and no
   cached dashboard exists yet.
 - Empty: Hive is reachable but the table has no rows; the dashboard returns safe zero/empty values.

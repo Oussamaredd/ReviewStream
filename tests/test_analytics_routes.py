@@ -3,12 +3,11 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app import analytics_dashboard, analytics_queries
-from backend.app.analytics_cache import clear_cached_dashboard, get_cached_dashboard
-from backend.app.catalog import enrich_product_rows
-from backend.app.config import settings
-from backend.app.hive_client import HiveQueryError
-from backend.app.main import app
+from backend.reviewstream.analytics.application.errors import AnalyticsUnavailableError
+from backend.reviewstream.analytics.infrastructure import hive_analytics_repository
+from backend.reviewstream.main import app
+from backend.reviewstream.platform.config import Settings, settings
+from backend.reviewstream.platform.hive_client import HiveQueryError
 
 client = TestClient(app)
 
@@ -88,13 +87,21 @@ POSITIVE_KEYWORDS_RESPONSE = {
 
 @pytest.fixture(autouse=True)
 def reset_dashboard_cache() -> None:
-    clear_cached_dashboard()
+    app.state.container.dashboard_cache.clear()
+
+
+def get_cached_dashboard() -> dict[str, Any] | None:
+    return app.state.container.dashboard_cache.get()
+
+
+def enrich_product_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return app.state.container.catalog_service.enrich_product_rows(rows)
 
 
 def mock_hive_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     queries: list[str] = []
 
-    def fake_fetch_one(query: str) -> dict[str, Any]:
+    def fake_fetch_one(query: str, app_settings: Settings | None = None) -> dict[str, Any]:
         queries.append(query)
         assert "FROM reviews_enriched" in query
 
@@ -107,7 +114,7 @@ def mock_hive_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
         assert "COUNT(*) AS total_reviews" in query
         return SUMMARY_RESPONSE
 
-    def fake_fetch_all(query: str) -> list[dict[str, Any]]:
+    def fake_fetch_all(query: str, app_settings: Settings | None = None) -> list[dict[str, Any]]:
         queries.append(query)
         assert "FROM reviews_enriched" in query
 
@@ -137,8 +144,8 @@ def mock_hive_calls(monkeypatch: pytest.MonkeyPatch) -> list[str]:
 
         raise AssertionError(f"Unexpected analytics query: {query}")
 
-    monkeypatch.setattr(analytics_queries, "fetch_one", fake_fetch_one)
-    monkeypatch.setattr(analytics_queries, "fetch_all", fake_fetch_all)
+    monkeypatch.setattr(hive_analytics_repository, "fetch_one", fake_fetch_one)
+    monkeypatch.setattr(hive_analytics_repository, "fetch_all", fake_fetch_all)
     return queries
 
 
@@ -151,7 +158,8 @@ def test_health_returns_status_and_topic() -> None:
 
 def test_kafka_health_returns_probe_payload(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
-        "backend.app.main.probe_kafka",
+        app.state.container.health_service.kafka_probe,
+        "probe",
         lambda: {
             "status": "ok",
             "available": True,
@@ -252,9 +260,11 @@ def test_dashboard_returns_cached_payload_when_hive_fails_after_success(
     assert fresh_response.status_code == 200
 
     def failing_fetch_dashboard() -> dict[str, Any]:
-        raise HiveQueryError("internal thrift connection failed")
+        raise AnalyticsUnavailableError("analytics store unavailable")
 
-    monkeypatch.setattr(analytics_dashboard, "fetch_dashboard", failing_fetch_dashboard)
+    monkeypatch.setattr(
+        app.state.container.dashboard_service, "fetch_dashboard", failing_fetch_dashboard
+    )
 
     cached_response = client.get("/analytics/dashboard")
 
@@ -274,9 +284,9 @@ def test_dashboard_fast_mode_returns_cached_payload_without_blocking_on_hive(
     fresh_response = client.get("/analytics/dashboard?prefer_cache=false&allow_sample=false")
     assert fresh_response.status_code == 200
 
-    monkeypatch.setattr(analytics_dashboard, "refresh_dashboard_cache", lambda: None)
+    monkeypatch.setattr(app.state.container.dashboard_service, "refresh_dashboard_cache", lambda: None)
     monkeypatch.setattr(
-        analytics_dashboard,
+        app.state.container.dashboard_service,
         "fetch_dashboard",
         lambda: pytest.fail("Fast cached dashboard should not block on Hive"),
     )
@@ -294,9 +304,11 @@ def test_dashboard_returns_503_when_hive_fails_and_cache_is_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def failing_fetch_dashboard() -> dict[str, Any]:
-        raise HiveQueryError("internal thrift connection failed")
+        raise AnalyticsUnavailableError("analytics store unavailable")
 
-    monkeypatch.setattr(analytics_dashboard, "fetch_dashboard", failing_fetch_dashboard)
+    monkeypatch.setattr(
+        app.state.container.dashboard_service, "fetch_dashboard", failing_fetch_dashboard
+    )
 
     response = client.get("/analytics/dashboard?prefer_cache=false&allow_sample=false")
 
@@ -308,10 +320,12 @@ def test_dashboard_defaults_to_sample_when_hive_fails_and_cache_is_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     def failing_fetch_dashboard() -> dict[str, Any]:
-        raise HiveQueryError("internal thrift connection failed")
+        raise AnalyticsUnavailableError("analytics store unavailable")
 
-    monkeypatch.setattr(analytics_dashboard, "refresh_dashboard_cache", lambda: None)
-    monkeypatch.setattr(analytics_dashboard, "fetch_dashboard", failing_fetch_dashboard)
+    monkeypatch.setattr(app.state.container.dashboard_service, "refresh_dashboard_cache", lambda: None)
+    monkeypatch.setattr(
+        app.state.container.dashboard_service, "fetch_dashboard", failing_fetch_dashboard
+    )
 
     response = client.get("/analytics/dashboard")
 
@@ -322,26 +336,38 @@ def test_dashboard_defaults_to_sample_when_hive_fails_and_cache_is_empty(
     assert payload["summary"]["total_reviews"] == 16
 
 
-def test_dashboard_fast_mode_returns_sample_when_cache_is_empty(
+def test_dashboard_cache_miss_fetches_fresh_hive_before_sample(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(analytics_dashboard, "refresh_dashboard_cache", lambda: None)
-    monkeypatch.setattr(
-        analytics_dashboard,
-        "fetch_dashboard",
-        lambda: pytest.fail("Sample dashboard should be returned before Hive is queried"),
-    )
+    mock_hive_calls(monkeypatch)
 
     response = client.get("/analytics/dashboard?prefer_cache=true&allow_sample=true")
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["status"] == "sample"
-    assert payload["stale"] is True
-    assert payload["summary"]["total_reviews"] == 16
-    assert payload["recent_reviews"]
-    assert payload["opinions"]
-    assert get_cached_dashboard() is None
+    assert payload["status"] == "fresh"
+    assert payload["stale"] is False
+    assert payload["summary"] == SUMMARY_RESPONSE
+    assert get_cached_dashboard() == payload
+
+
+def test_hive_repository_uses_injected_settings(monkeypatch: pytest.MonkeyPatch) -> None:
+    injected_settings = Settings(hive_host="custom-hive-host")
+    captured_settings: list[Settings | None] = []
+
+    def fake_fetch_one(query: str, app_settings: Settings | None = None) -> dict[str, Any]:
+        captured_settings.append(app_settings)
+        return SUMMARY_RESPONSE
+
+    monkeypatch.setattr(hive_analytics_repository, "fetch_one", fake_fetch_one)
+
+    repository = hive_analytics_repository.HiveAnalyticsRepository(
+        enrich_product_rows,
+        injected_settings,
+    )
+
+    assert repository.fetch_summary() == SUMMARY_RESPONSE
+    assert captured_settings == [injected_settings]
 
 
 def test_dashboard_background_refresh_is_disabled_by_default(
@@ -354,9 +380,11 @@ def test_dashboard_background_refresh_is_disabled_by_default(
         refresh_called = True
 
     monkeypatch.delenv("DASHBOARD_BACKGROUND_REFRESH_ENABLED", raising=False)
-    monkeypatch.setattr(analytics_dashboard, "refresh_dashboard_cache", mark_refresh_called)
+    monkeypatch.setattr(
+        app.state.container.dashboard_service, "refresh_dashboard_cache", mark_refresh_called
+    )
 
-    analytics_dashboard.schedule_dashboard_refresh()
+    app.state.container.dashboard_service.schedule_dashboard_refresh()
 
     assert refresh_called is False
 
@@ -382,7 +410,9 @@ def test_empty_dashboard_responses_are_valid_and_safe(monkeypatch: pytest.Monkey
             "positive_keywords": {"keyword_type": "positive", "matching_reviews": None},
         }
 
-    monkeypatch.setattr(analytics_dashboard, "fetch_dashboard", empty_fetch_dashboard)
+    monkeypatch.setattr(
+        app.state.container.dashboard_service, "fetch_dashboard", empty_fetch_dashboard
+    )
 
     response = client.get("/analytics/dashboard?prefer_cache=false&allow_sample=false")
 
@@ -410,7 +440,9 @@ def test_dashboard_cache_stores_only_valid_successful_payloads(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
-        analytics_dashboard, "fetch_dashboard", lambda: {"summary": SUMMARY_RESPONSE}
+        app.state.container.dashboard_service,
+        "fetch_dashboard",
+        lambda: {"summary": SUMMARY_RESPONSE},
     )
 
     response = client.get("/analytics/dashboard?prefer_cache=false&allow_sample=false")
@@ -445,7 +477,7 @@ def test_analytics_rejects_invalid_query_params(
     def fail_if_hive_is_called(query: str) -> list[dict[str, Any]]:
         raise AssertionError(f"Hive should not be called for invalid params: {query}")
 
-    monkeypatch.setattr(analytics_queries, "fetch_all", fail_if_hive_is_called)
+    monkeypatch.setattr(hive_analytics_repository, "fetch_all", fail_if_hive_is_called)
 
     response = client.get(path)
 
@@ -476,25 +508,25 @@ def test_hive_errors_return_safe_analytics_detail(
     path: str,
     failing_mock: str,
 ) -> None:
-    def failing_fetch_one(query: str) -> dict[str, Any]:
+    def failing_fetch_one(query: str, app_settings: Settings | None = None) -> dict[str, Any]:
         raise HiveQueryError("internal thrift connection failed")
 
-    def failing_fetch_all(query: str) -> list[dict[str, Any]]:
+    def failing_fetch_all(query: str, app_settings: Settings | None = None) -> list[dict[str, Any]]:
         raise HiveQueryError("internal thrift connection failed")
 
-    def fallback_fetch_one(query: str) -> dict[str, Any]:
+    def fallback_fetch_one(query: str, app_settings: Settings | None = None) -> dict[str, Any]:
         return SUMMARY_RESPONSE
 
-    def fallback_fetch_all(query: str) -> list[dict[str, Any]]:
+    def fallback_fetch_all(query: str, app_settings: Settings | None = None) -> list[dict[str, Any]]:
         return PRODUCT_RESPONSE
 
     monkeypatch.setattr(
-        analytics_queries,
+        hive_analytics_repository,
         "fetch_one",
         failing_fetch_one if failing_mock == "fetch_one" else fallback_fetch_one,
     )
     monkeypatch.setattr(
-        analytics_queries,
+        hive_analytics_repository,
         "fetch_all",
         failing_fetch_all if failing_mock == "fetch_all" else fallback_fetch_all,
     )

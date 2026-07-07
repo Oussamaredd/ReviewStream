@@ -1,0 +1,1 @@
+"""Health HTTP adapter."""

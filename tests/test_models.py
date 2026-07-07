@@ -1,7 +1,8 @@
 import pytest
 from pydantic import ValidationError
 
-from backend.app.models import ReviewEvent, ReviewIn
+from backend.reviewstream.reviews.domain.events import ReviewSubmitted
+from backend.reviewstream.reviews.interfaces.http.schemas import ReviewIn
 
 
 def test_review_in_accepts_valid_payload() -> None:
@@ -34,8 +35,9 @@ def test_review_in_rejects_invalid_payload(payload: dict[str, object]) -> None:
 def test_review_event_adds_id_and_timestamp() -> None:
     review = ReviewIn(product_id="P001", user_id="client1", score=5, text="Great product")
 
-    event = ReviewEvent.from_review(review)
+    event = ReviewSubmitted.from_review(review.to_command().to_review())
 
     assert event.product_id == review.product_id
     assert event.review_id
-    assert event.created_at.endswith("+00:00")
+    assert event.created_at.tzinfo is not None
+    assert event.to_payload()["created_at"].endswith("+00:00")

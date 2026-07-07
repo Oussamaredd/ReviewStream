@@ -103,9 +103,9 @@ The cache is process-local. Restarting the API clears it.
 
 ## Dashboard Cold Start Message
 
-If Hive is unavailable and the API has no cached dashboard snapshot yet, the frontend first shows a
-sample analytics snapshot from `data/sample_reviews.csv`. Direct API calls without sample fallback
-still return:
+If Hive is unavailable and the API has no cached dashboard snapshot yet, the frontend shows a sample
+analytics snapshot from `data/sample_reviews.csv` after the fresh Hive attempt fails. Direct API
+calls without sample fallback still return:
 
 ```text
 Analytics are not ready yet. Start Hive, initialize the table, or seed sample data.
