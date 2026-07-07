@@ -3,23 +3,61 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from backend.app import review_service
-from backend.app.main import app
+from backend.reviewstream.bootstrap import build_container, create_app
+from backend.reviewstream.health.application.checks import HealthService
+from backend.reviewstream.health.infrastructure.kafka_health_probe import KafkaHealthProbe
+from backend.reviewstream.reviews.application.dto import PublishReceipt
+from backend.reviewstream.reviews.application.use_cases import (
+    SubmitProductReviewUseCase,
+    SubmitReviewUseCase,
+)
+from backend.reviewstream.reviews.domain.events import ReviewSubmitted
 
-client = TestClient(app)
+
+class FakeReviewPublisher:
+    def __init__(self) -> None:
+        self.sent_events: list[dict[str, object]] = []
+
+    def publish(self, event: ReviewSubmitted) -> PublishReceipt:
+        self.sent_events.append(event.to_payload())
+        return PublishReceipt(destination="reviews", partition=0, offset=12)
+
+    def probe(self) -> dict[str, Any]:
+        return {
+            "status": "ok",
+            "available": True,
+            "bootstrap_servers": ["127.0.0.1:9092"],
+            "topic": "reviews",
+        }
+
+    def close(self) -> None:
+        return None
+
+
+@pytest.fixture
+def fake_publisher() -> FakeReviewPublisher:
+    return FakeReviewPublisher()
+
+
+@pytest.fixture
+def client(fake_publisher: FakeReviewPublisher) -> TestClient:
+    container = build_container()
+    container.review_publisher = fake_publisher
+    container.submit_review = SubmitReviewUseCase(fake_publisher)
+    container.submit_product_review = SubmitProductReviewUseCase(
+        container.catalog_service, container.submit_review
+    )
+    container.health_service = HealthService(
+        settings=container.settings,
+        kafka_probe=KafkaHealthProbe(fake_publisher.probe),
+    )
+    return TestClient(create_app(container))
 
 
 def test_product_review_submission_sends_event_to_kafka(
-    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+    fake_publisher: FakeReviewPublisher,
 ) -> None:
-    sent_events: list[dict[str, Any]] = []
-
-    def fake_send_review(event: dict[str, Any]) -> dict[str, Any]:
-        sent_events.append(event)
-        return {"topic": "reviews", "partition": 0, "offset": 12}
-
-    monkeypatch.setattr(review_service, "send_review", fake_send_review)
-
     response = client.post(
         "/products/P001/reviews",
         json={"score": 5, "text": "Great product, fresh and tasty."},
@@ -36,17 +74,13 @@ def test_product_review_submission_sends_event_to_kafka(
     assert payload["review"]["text"] == "Great product, fresh and tasty."
     assert payload["review"]["review_id"]
     assert payload["review"]["created_at"]
-    assert sent_events == [payload["review"]]
+    assert fake_publisher.sent_events == [payload["review"]]
 
 
 def test_product_review_submission_returns_404_for_unknown_product(
-    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+    fake_publisher: FakeReviewPublisher,
 ) -> None:
-    def fail_if_called(event: dict[str, Any]) -> dict[str, Any]:
-        raise AssertionError(f"Kafka should not be called for unknown products: {event}")
-
-    monkeypatch.setattr(review_service, "send_review", fail_if_called)
-
     response = client.post(
         "/products/UNKNOWN/reviews",
         json={"score": 5, "text": "Great product"},
@@ -54,6 +88,7 @@ def test_product_review_submission_returns_404_for_unknown_product(
 
     assert response.status_code == 404
     assert response.json() == {"detail": "Product not found"}
+    assert fake_publisher.sent_events == []
 
 
 @pytest.mark.parametrize(
@@ -67,14 +102,11 @@ def test_product_review_submission_returns_404_for_unknown_product(
     ],
 )
 def test_product_review_submission_rejects_invalid_body(
-    monkeypatch: pytest.MonkeyPatch,
+    client: TestClient,
+    fake_publisher: FakeReviewPublisher,
     payload: dict[str, Any],
 ) -> None:
-    def fail_if_called(event: dict[str, Any]) -> dict[str, Any]:
-        raise AssertionError(f"Kafka should not be called for invalid bodies: {event}")
-
-    monkeypatch.setattr(review_service, "send_review", fail_if_called)
-
     response = client.post("/products/P001/reviews", json=payload)
 
     assert response.status_code == 422
+    assert fake_publisher.sent_events == []

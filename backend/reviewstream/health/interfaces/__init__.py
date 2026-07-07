@@ -1,0 +1,1 @@
+"""Health interface adapters."""

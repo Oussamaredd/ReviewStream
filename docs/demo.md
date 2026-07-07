@@ -119,9 +119,9 @@ http://localhost:5173/analytics
 
 - Fresh: Hive query succeeded.
 - Cached: Hive is unavailable, but the API serves the last successful dashboard snapshot.
-- Sample: first paint can show committed sample analytics. Automatic background Hive refresh is
-  disabled by default for the lightweight demo; set `DASHBOARD_BACKGROUND_REFRESH_ENABLED=true`
-  only when you want the API to warm the Hive cache on its own.
+- Sample: first paint tries Hive and shows committed sample analytics only if Hive is not ready.
+  Set `DASHBOARD_BACKGROUND_REFRESH_ENABLED=true` only when you want cached responses to trigger
+  background Hive refreshes.
 - Strict cold start: direct strict API calls can still return `503` when Hive is unavailable and no
   cache exists.
 - Empty: Hive is available but no rows exist. The dashboard renders zero and empty-list defaults.

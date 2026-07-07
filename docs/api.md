@@ -250,9 +250,8 @@ Dashboard states:
 - Cached: Hive failed after a previous success; response has `status = cached`, `stale = true`,
   and `warning = "Hive is unavailable. Showing last successful analytics snapshot."`.
 - Sample: default dashboard requests use `prefer_cache=true&allow_sample=true`. If no process
-  cache exists yet, the API returns analytics computed from committed `data/sample_reviews.csv`
-  with `status = sample`. Automatic background Hive refresh is disabled by default for local demos;
-  enable `DASHBOARD_BACKGROUND_REFRESH_ENABLED=true` to refresh the process cache asynchronously.
+  cache exists yet, the API tries Hive first, then returns analytics computed from committed
+  `data/sample_reviews.csv` with `status = sample` only when Hive is unavailable.
 - Strict cold start: callers that request
   `/analytics/dashboard?prefer_cache=false&allow_sample=false` get `503` when Hive fails before
   any successful dashboard.
